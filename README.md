@@ -11,19 +11,20 @@ Measured 2026-09-27 and 28, temperature 0,
 nvidia/GLM-5.3-Flash-NVFP4, both ConnectX-7 PCIe roots in use, with every
 override in `experimental/compose/`: RDMA collectives, weight snapshots, FP8
 and NVFP4 dense layers, custom MoE and attention kernels, sequence parallel
-prefill and a draft-length scheduler. They replace files inside the image
-this repo builds, and each one can be turned off.
+prefill, a draft-length scheduler and RecoverSSM, which keeps one KDA state
+per request. They replace files inside the image this repo builds, and each
+one can be turned off.
 [experimental/README.md](experimental/README.md) has the details.
 
 | | TP=4, four boxes | TP=2, two boxes |
 |---|---|---|
-| prefill @32k, cold | 4,946 tok/s | 3,210 tok/s |
-| prefill @128k, cold | 4,750 tok/s | 3,015 tok/s |
-| decode, code / prose / structured | 107.9 / 61.7 / 157.1 tok/s | 58.0 / 35.0 / 79.3 tok/s |
-| code, 1 / 2 / 4 / 8 streams, aggregate | 127 / 148 / 196 / 242 tok/s | 69 / 80 / 105 / 94 tok/s |
-| KV pool (fp8_e4m3) | 3.63M tokens, 26 GiB pin | 260k tokens, 4 GiB pin |
+| prefill @32k, cold | 4,981 tok/s | 3,201 tok/s |
+| prefill @128k, cold | 4,822 tok/s | 3,160 tok/s |
+| decode, code / prose / structured | 106.6 / 59.5 / 161.6 tok/s | 60.5 / 36.4 / 89.5 tok/s |
+| code, 1 / 2 / 4 / 8 streams, aggregate | 129 / 150 / 201 / 240 tok/s | 74 / 84 / 117 / 130 tok/s |
+| KV pool (fp8_e4m3) | 3.99M tokens, 26 GiB pin | 334k tokens, 4 GiB pin |
 | longest request | 524k tokens | 160k tokens |
-| requests decoding at once | 50 | 3 |
+| requests decoding at once | 64 | 16 |
 | boot, once snapshots exist | ~2 min | not measured yet |
 | needle recall | 12/12 up to 507k tokens | 6/6 up to 128k tokens |
 
@@ -34,8 +35,7 @@ reasoning effort low, with every output gate passing. Streams each generate
 
 TP=4 is the default. For two boxes, put `TP=2` in `compose/.env` on both, and
 the entrypoint picks the two-box KV pin, context length and request limit. Two
-boxes run with ~1 GiB of memory to spare, and only three requests' state fits
-in the smaller KV pool, so past three streams the rest wait.
+boxes keep 6-9 GiB of memory free and decode 16 requests at once.
 
 [model.yaml](model.yaml) has the checkpoints and the memory footprint, and
 [KNOBS.md](KNOBS.md) lists every environment variable the entrypoint reads.
@@ -333,7 +333,7 @@ into the image.
 | `MAX_NUM_BATCHED_TOKENS` | 16384 | Measured the same as 8192 at 200k once chunks are capped (234.1 s against 237.7 s, 2026-09-06). |
 | `KV_CACHE_MEMORY` | 26 GiB | 2.63M tokens with DFlash2. Pinned, `--gpu-memory-utilization` no longer sizes the pool, and vLLM says so at startup. At 28 GiB the head sat near 1 GiB free and eight long requests had a worker OOM-killed. |
 | `FABRIC_SUBNETS` | every address mentatd tags `rdma` | Each GB10's ConnectX-7 sits on two PCIe roots and one root tops out near 110 Gb/s. NCCL over both doubles all-reduce bandwidth (110 to 190 Gb/s) and took a 126k prefill from 2,412 to 2,680 tok/s (2026-09-26); decode did not move. Needs an IPv4 on the second root's interface in its own subnet, MTU 9000, the same RoCE v2 GID index on both roots, and both interfaces tagged `rdma` (step 4). To set it by hand instead, quote it and separate the subnets with spaces (`FABRIC_SUBNETS="198.18.0. 198.19.0."`). With only `CLUSTER_SUBNET` set, NCCL uses that one root. The numbers at the top use both. |
-| `MAX_NUM_SEQS` | 32 | Each running request holds a KDA recurrent state for every verify position (1+k = 8 at k=7) out of the KV pool, so the pool caps this, not throughput. With the overrides the drafter's KV moves to its own pool and 50 fit. |
+| `MAX_NUM_SEQS` | 32 | Each running request holds a KDA recurrent state for every verify position (1+k = 8 at k=7) out of the KV pool, so the pool caps this, not throughput. With the overrides RecoverSSM keeps one state per request, and the default rises to 64 at TP=4 and 16 at TP=2. At 64, 64 × (1+k) = 512 tokens is the largest CUDA graph. |
 | DFlash2 `k=7` | | Decodes 121.9 / 91.3 / 38.7 tok/s structured / code / prose on this image without the overrides (`dev/repro/decode.py`, thinking off). On an earlier image (2026-09-23) it gave 109.8 / 88.8 / 52.6, and the checkpoint's own MTP head at k=4 gave 57.2 / 54.4 / 45.6. Costs ~41% of the KV pool: 3.44M tokens with speculation off, 2.02M with it at the same pin, on the pre-nightly image (2026-09-06). |
 | `MOE_BACKEND` | `flashinfer_cutlass` | NVFP4 weights and activations, quantizing activations with the checkpoint's own input scales. The MoE kernels in `experimental/` read its processed tensors, so they need it. `marlin` keeps activations in 16 bits and ignores the input scales. It ran on earlier images and is untested on this one. |
 | `SAFETENSORS_LOAD_STRATEGY` | eager | Loads in 511 s against 690 s for lazy. Unpinned, eager's buffers cost 38% of the KV cache; with the pin they cost nothing. |

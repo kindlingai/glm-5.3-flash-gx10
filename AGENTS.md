@@ -126,7 +126,7 @@ workload (code, prose, structured or mixed) at the concurrency levels you give
 it, each stream with its own prompt:
 
 ```
-for w in code prose mixed; do python3 gate/conc_workload.py $w 1 2 4 8 16 32 50; done
+for w in code prose mixed; do python3 gate/conc_workload.py $w 1 2 4 8 16 32 64; done
 ```
 
 Report it against the same sweep on `main`. The targets I care about are 155
