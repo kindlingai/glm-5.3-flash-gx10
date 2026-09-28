@@ -74,6 +74,8 @@ class Snapshot:
             )
         )
         key["tag"] = os.environ.get("VLLM_WEIGHT_SNAPSHOT_TAG", "")
+        # The indexer's top-k scratch buffer has one row per batched token.
+        key["max_num_batched_tokens"] = vllm_config.scheduler_config.max_num_batched_tokens
         digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
         role = "draft" if is_draft else "target"
         name = f"{role}-tp{key['tp_rank']}of{key['tp_size']}-dp{key['dp_rank']}-{digest}"
