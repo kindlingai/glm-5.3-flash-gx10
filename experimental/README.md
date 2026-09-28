@@ -16,7 +16,7 @@ Requirements: the image built from this tree (`image/build.sh`) and the normal f
      -f experimental/compose/arx.yaml -f experimental/compose/snapshot.yaml \
      -f experimental/compose/adaptive-k.yaml -f experimental/compose/fp8.yaml \
      -f experimental/compose/megamoe.yaml -f experimental/compose/fixes.yaml \
-     -f experimental/compose/sp.yaml up -d
+     -f experimental/compose/sp.yaml -f experimental/compose/recoverssm.yaml up -d
    ```
 
 3. The first boot loads the checkpoint normally (~8 min), compiles the CUDA extensions, and writes a processed-weight snapshot per rank under `weight-snapshots` in the cache mount (`CACHE_HOME`, or the `glm53_cache` volume), ~48 GB per node. Later boots restore it (~3.5 min).
@@ -41,7 +41,7 @@ Leave a compose file out to drop that piece, or set its switch in `.env` (every 
 | `VLLM_MOE_PREFILL_Y8` | 1 | FP8 per-expert rows in the fused prefill MoE |
 | `VLLM_TRITON_SPARSE_MLA` | 1 | Triton sparse MLA instead of FlashInfer's (fixes.yaml) |
 | `MAX_NUM_SEQS` | 50 | requests decoding at once (fixes.yaml); about 50 KDA states fit in the pinned KV pool, against the stock 32 |
-| `VLLM_GLM5NEXT_RECOVERSSM` | 0 | with recoverssm.yaml: KDA drafts verified from one saved state per request, bit-exact; raises `MAX_NUM_SEQS` to 64 at TP=4 and 16 at TP=2 |
+| `VLLM_GLM5NEXT_RECOVERSSM` | 1 | with recoverssm.yaml: KDA drafts verified from one saved state per request, bit-exact; raises `MAX_NUM_SEQS` to 64 at TP=4 and 16 at TP=2 |
 | `VLLM_GLM5NEXT_DRAFT_POOL` | 1 | the drafter's KV in its own small pool instead of a page in every KV block: ~40% more KV tokens (fixes.yaml) |
 | `VLLM_DENSE_W4` | in_proj, o_proj, shared experts, drafter | regex of dense layers stored as NVFP4 (the rest are FP8); add `\|lm_head$` for the opt-in NVFP4 lm_head |
 | `VLLM_DENSE_FP8_LM_HEAD` | 1 | FP8 lm_head |
@@ -131,8 +131,8 @@ Boot goes from about 8 minutes to about 3.5 once snapshots exist.
   through small ones, and at 16+ streams the scheduler verifies more drafts
   than a fixed table would allow. The drafter uses Triton attention, which
   avoids a mid-step host sync.
-- **recoverssm** (`fixes/recoverssm.py`, off unless `VLLM_GLM5NEXT_RECOVERSSM=1`
-  with `compose/recoverssm.yaml`): the KDA layers keep one recurrent state
+- **recoverssm** (`fixes/recoverssm.py`, `compose/recoverssm.yaml`;
+  `VLLM_GLM5NEXT_RECOVERSSM=0` turns it off): the KDA layers keep one recurrent state
   per request instead of one per draft position, and after sampling replay
   the accepted tokens through the stock kernel, so outputs are bit-identical.
   Ported from vLLM's Kimi-K3 RecoverSSM. At TP=2, 16 requests run at once

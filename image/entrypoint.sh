@@ -33,19 +33,22 @@ MTP="${MTP:-1}"
 # are twice as big: three short requests run at once, a fourth waits.
 # RecoverSSM (recoverssm.yaml) keeps one state per request instead of 1 + k:
 # 64 run at TP=4, the most whose k=7 steps fit the largest captured graph,
-# and 16 at TP=2, where the pool is 88% full.
+# and 16 at TP=2, where the pool is 88% full. It also removes the state
+# writes adaptive-k's step cost used to include, so it gets its own prior,
+# fitted on code and prose at two concurrencies with k forced to 2 and 7.
 _rs=0; [[ "${VLLM_GLM5NEXT_RECOVERSSM:-0}" == 1 ]] && _rs=1
 case "$TP" in
   4) : "${KV_CACHE_MEMORY:=27917287424}" "${MAX_MODEL_LEN:=524288}"
-     (( _rs )) && : "${MAX_NUM_SEQS:=64}"
+     (( _rs )) && : "${MAX_NUM_SEQS:=64}" "${VLLM_ADAPTIVE_K_MODEL:=26.4,0.660,0.484}"
      # With the drafter's KV in its own pool (fixes.yaml), ~50 requests' KDA
      # states fit in the pool; without it, 32.
      [[ "${VLLM_GLM5NEXT_DRAFT_POOL:-0}" == 1 ]] && : "${MAX_NUM_SEQS:=50}"
      : "${VLLM_ADAPTIVE_K_MODEL:=27.0,0.635,0.542}" ;;
   2) : "${KV_CACHE_MEMORY:=4294967296}" "${MAX_MODEL_LEN:=163840}"
-     (( _rs )) && : "${MAX_NUM_SEQS:=16}"
+     # A rank reads twice the expert weights it does at TP=4, so the
+     # per-expert cost is held at twice TP=4's and the rest fitted.
+     (( _rs )) && : "${MAX_NUM_SEQS:=16}" "${VLLM_ADAPTIVE_K_MODEL:=32.1,1.32,0.427}"
      : "${MAX_NUM_SEQS:=4}"
-     # A rank reads twice the expert weights it does at TP=4.
      : "${VLLM_ADAPTIVE_K_MODEL:=35.0,1.27,0.8}" ;;
   *) echo "FATAL: TP=$TP; this recipe is tuned for TP=4 (four boxes) or TP=2 (two)" >&2; exit 1 ;;
 esac

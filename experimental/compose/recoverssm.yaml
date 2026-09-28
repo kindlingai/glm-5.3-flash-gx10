@@ -1,6 +1,6 @@
 # KDA spec verify from one checkpoint state per request, ported from Kimi-K3's
-# RecoverSSM (fixes/recoverssm.py). Prototype: off unless
-# VLLM_GLM5NEXT_RECOVERSSM=1. The stock spec path keeps 1 + k recurrent states
+# RecoverSSM (fixes/recoverssm.py). On with this file;
+# VLLM_GLM5NEXT_RECOVERSSM=0 turns it off. The stock spec path keeps 1 + k recurrent states
 # per request and writes one per verified token. This verifies from the
 # checkpoint, records each token's inputs, and after sampling replays only
 # the accepted tokens into it. Each request then holds one KDA block per
@@ -14,4 +14,4 @@ services:
       - ../experimental/fixes/recoverssm.py:/usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/common/recoverssm.py:ro
       - ../experimental/fixes/model.py:/usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/common/model.py:ro
     environment:
-      - VLLM_GLM5NEXT_RECOVERSSM=${VLLM_GLM5NEXT_RECOVERSSM:-0}
+      - VLLM_GLM5NEXT_RECOVERSSM=${VLLM_GLM5NEXT_RECOVERSSM:-1}
