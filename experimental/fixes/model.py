@@ -643,6 +643,13 @@ class Glm5NextDecoderLayer(nn.Module):
                 topk_indices_dtype=runner._quant_method.topk_indices_dtype)
 
         H = shard.shape[1]
+        # The quantized gather hands the shared experts an uninitialized
+        # placeholder and their FP8 input through dense_fp8.prequant. A linear
+        # left in BF16 would read the placeholder, so gather BF16 for those.
+        shared_gate_up = getattr(moe.shared_experts, "gate_up_proj", None)
+        if quantized and type(getattr(shared_gate_up, "quant_method", None)).__name__ not in (
+                "Fp8DenseLinearMethod", "W4DenseLinearMethod"):
+            quantized = False
         if quantized:
             from vllm import _custom_ops as ops
             from vllm.model_executor.model_loader import dense_fp8
