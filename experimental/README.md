@@ -31,6 +31,9 @@ Leave a compose file out to drop that piece, or set its switch in `.env` (every 
 | `VLLM_ARXBIG` | 1 | arxbig RDMA collectives for prefill (arx.yaml) |
 | `VLLM_ARXBIG_AG` | 0 | route prefill all-gathers through arxbig; off because its output sits in pinned memory, where GEMMs reading it run 3.7x slower |
 | `VLLM_ARXBIG_RS` | 1 | RDMA reduce-scatter buffers (~0.5 GB pinned per rank); needed by `VLLM_GLM_SP_MOE_FUSED` |
+| `VLLM_ARX_RING` | 0 | for boxes cabled in a ring with no switch (TP=4 or 2): arx and arxbig open QPs only to rank r-1 and r+1, and the rank between two others relays their data, with the same results as over the switch. Needs the two below, and rank r's next port cabled to rank r+1's prev port |
+| `ARX_RING_PREV_HCAS` | unset | with `VLLM_ARX_RING=1`: the RDMA devices, root 0 then root 1, of the port cabled to rank r-1. Set per node. Each device uses the GID of its own IPv4 address |
+| `ARX_RING_NEXT_HCAS` | unset | the same for the port cabled to rank r+1 |
 | `VLLM_GLM_SP_TP` | 1 | sequence parallelism for forwards of `VLLM_GLM_SP_MIN_TOKENS` (1024) or more (sp.yaml) |
 | `VLLM_GLM_SP_FP8_GATHER` | 1 | gather KDA attention inputs as FP8 |
 | `VLLM_GLM_SP_MOE_FUSED` | 1 | MoE combine feeding the RDMA reduce-scatter; needs arx.yaml with `VLLM_ARXBIG_RS=1` and megamoe.yaml with `VLLM_MOE_PREFILL=1` |

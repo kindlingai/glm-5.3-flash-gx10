@@ -20,6 +20,21 @@
 // its own flag on that root's QP: flag[src * 2 + root]. Rank r sends to
 // r+1, r+2, ... in turn, so no receiver takes every sender at once.
 //
+// Ring mode is for boxes cabled in a ring with no switch. The ConnectX cannot
+// forward RoCE for other boxes, so QPs go only to prev = r-1 and next = r+1,
+// each over the two functions of the port facing that neighbour. A rank sends
+// its partial to next, and at world 4 to prev as well. The proxy forwards the
+// partial from prev on to next. The relayed data lands in the same
+// recv[seq & 1][src] and flag[src * 2 + root] as a direct write, so the GPU
+// side is unchanged. World 2 sends to next only.
+//
+// The relay adds one reuse hazard. Rank m reads recv[par][m-1] to forward it
+// to m+1, and m-1 writes seq + 2 there next. m-1 publishes seq + 2 after
+// finishing seq + 1. Finishing needs m+1's seq + 1 partial. m+1 publishes that
+// after finishing seq, and finishing seq needed the relayed data. The relay
+// takes the partial's size from this rank's own publish of the same seq. The
+// same chain keeps this rank from publishing seq + 2 before the relay.
+//
 // vLLM form: prepare() returns this rank's connection details, the caller
 // all-gathers them over its own group, connect() wires the QPs and starts the
 // proxy, then allreduce(in, out) runs on the current stream and is
@@ -50,6 +65,7 @@
 #define IBCK(x) do { if (!(x)) { fprintf(stderr, "%s:%d %s failed: %s\n", __FILE__, __LINE__, #x, strerror(errno)); exit(1); } } while (0)
 
 constexpr int kMaxWorld = 8;
+constexpr int kMaxDev = 4;  // ring mode: 2 ports x 2 roots
 constexpr size_t kMaxBytes = 512 << 10;  // one partial: bf16 [32, 4096] is 256 KB
 
 struct Ctl {                   // pinned; written by the GPU, read by the proxy
@@ -59,12 +75,12 @@ struct Ctl {                   // pinned; written by the GPU, read by the proxy
   volatile uint64_t done;      // last seq the GPU finished summing (for the watchdog)
 };
 
-struct PeerInfo {  // what rank r tells everyone about its QP towards peer j
-  uint32_t qpn[kMaxWorld][2];  // towards peer j, per root
-  uint8_t gid[2][16];          // per ConnectX root
-  uint32_t mtu[2];              // per root: the port's active MTU (enum ibv_mtu)
+struct PeerInfo {  // what rank r tells everyone about its QPs
+  uint32_t qpn[kMaxWorld][2];  // per channel (see State), per root
+  uint8_t gid[kMaxDev][16];    // per RDMA device
+  uint32_t mtu[kMaxDev];       // per device: the port's active MTU (enum ibv_mtu)
   uint64_t recv_addr, flag_addr;
-  uint32_t recv_rkey[2], flag_rkey[2];
+  uint32_t recv_rkey[kMaxDev], flag_rkey[kMaxDev];
 };
 
 // ---- GPU side ---------------------------------------------------------------
@@ -178,15 +194,21 @@ __global__ void arx_kernel(Dev d, const __nv_bfloat16* __restrict__ in, __nv_bfl
 // ---- host side ---------------------------------------------------------------
 
 namespace {
+// A channel is one QP per root to one peer. Mesh: channel j goes to rank j
+// over device r. Ring: channel 0 goes to prev over devices 0 and 1, channel 1
+// to next over devices 2 and 3, and meets the peer's channel on the other side.
 struct State {
-  int rank = -1, world = 0, gid_idx = 0;
+  int rank = -1, world = 0, ndev = 0;
+  bool ring = false;
+  int prev = 0, next = 0;
+  int gid_idx[kMaxDev] = {};
   uint8_t *send_h = nullptr, *recv_h = nullptr;
   uint64_t* flag_h = nullptr;
   Ctl* ctl = nullptr;
-  ibv_context* ctx[2] = {};
-  ibv_pd* pd[2] = {};
-  ibv_mr *send_mr[2] = {}, *recv_mr[2] = {}, *flag_mr[2] = {};
-  ibv_cq* cq[2] = {};
+  ibv_context* ctx[kMaxDev] = {};
+  ibv_pd* pd[kMaxDev] = {};
+  ibv_mr *send_mr[kMaxDev] = {}, *recv_mr[kMaxDev] = {}, *flag_mr[kMaxDev] = {};
+  ibv_cq* cq[kMaxDev] = {};
   ibv_qp* qp[kMaxWorld][2] = {};
   PeerInfo mine{};
   std::vector<PeerInfo> all;
@@ -196,13 +218,61 @@ struct State {
 State S;
 std::atomic<bool> g_proxy_err{false};
 
+int chan_peer(int c) { return S.ring ? (c ? S.next : S.prev) : c; }
+int chan_dev(int c, int r) { return S.ring ? c * 2 + r : r; }         // device here
+int chan_rdev(int c, int r) { return S.ring ? (1 - c) * 2 + r : r; }  // device at the peer
+
+// One write of [laddr, laddr + len) to the peer's recv at roff, then seq into
+// its flag slot, on channel c's root r QP.
+bool post(int c, int r, uint64_t laddr, uint32_t lkey, uint32_t len, uint64_t roff, int slot, uint64_t seq,
+          uint64_t& posted) {
+  const PeerInfo& p = S.all[chan_peer(c)];
+  const int rd = chan_rdev(c, r);
+  ibv_sge sg{laddr, len, lkey};
+  ibv_send_wr w{}, f{}, *bad;
+  w.opcode = IBV_WR_RDMA_WRITE; w.sg_list = &sg; w.num_sge = 1;
+  w.wr.rdma.remote_addr = p.recv_addr + roff;
+  w.wr.rdma.rkey = p.recv_rkey[rd];
+  ibv_sge fs{(uint64_t)&seq, 8, 0};
+  f.opcode = IBV_WR_RDMA_WRITE; f.sg_list = &fs; f.num_sge = 1; f.send_flags = IBV_SEND_INLINE;
+  f.wr.rdma.remote_addr = p.flag_addr + slot * 8; f.wr.rdma.rkey = p.flag_rkey[rd];
+  // Unsignalled WRs are reclaimed only by a later signalled one on the
+  // same QP, so the count is per QP.
+  if ((++posted & 31) == 0) f.send_flags |= IBV_SEND_SIGNALED;
+  w.next = &f;
+  if (int e = ibv_post_send(S.qp[c][r], &w, &bad)) {
+    fprintf(stderr, "arx rank %d: post to %d root %d failed: %s\n", S.rank, chan_peer(c), r, strerror(e));
+    return false;
+  }
+  return true;
+}
+
 void proxy_loop() {
   uint64_t seq = 0, posted[kMaxWorld][2] = {};
   const int rank = S.rank, world = S.world;
   auto last_move = std::chrono::steady_clock::now();
   uint64_t last_done = 0;
   bool reported = false;
+  // Ring at world 4: the last seq relayed from prev to next, per root, and
+  // the size of this rank's own partial for each parity.
+  uint64_t relayed[2] = {}, own_bytes[2] = {};
+  const bool relay = S.ring && world == 4;
+  const volatile uint64_t* flags = S.flag_h;
   while (!S.ctl->stop) {
+    for (int r = 0; relay && r < 2; ++r)
+      while (relayed[r] < seq && flags[S.prev * 2 + r] > relayed[r]) {
+        std::atomic_thread_fence(std::memory_order_acquire);
+        const uint64_t s = ++relayed[r];
+        const int par = s & 1;
+        const uint32_t bytes = (uint32_t)own_bytes[par], half = (bytes / 2 + 15) & ~15u;
+        const uint32_t off = r ? half : 0, len = r ? bytes - half : half;
+        const uint64_t at = ((uint64_t)par * world + S.prev) * kMaxBytes + off;
+        if (!post(1, r, (uint64_t)(S.recv_h + at), S.recv_mr[chan_dev(1, r)]->lkey, len, at, S.prev * 2 + r, s,
+                  posted[1][r])) {
+          g_proxy_err = true;
+          return;
+        }
+      }
     if (S.ctl->seq <= seq) {
       // Watchdog: published work that has not completed for 2 s is a stall,
       // and so is a peer whose flags are ahead of what this rank posted.
@@ -224,6 +294,9 @@ void proxy_loop() {
           if (j != rank)
             o += snprintf(buf + o, sizeof buf - o, " r%d=%lu/%lu", j, (unsigned long)S.flag_h[j * 2],
                           (unsigned long)S.flag_h[j * 2 + 1]);
+        if (relay)
+          o += snprintf(buf + o, sizeof buf - o, "; relayed %lu/%lu", (unsigned long)relayed[0],
+                        (unsigned long)relayed[1]);
         fprintf(stderr, "%s\n", buf);
       }
       continue;
@@ -233,31 +306,21 @@ void proxy_loop() {
     const int par = seq & 1;
     const uint32_t bytes = (uint32_t)S.ctl->bytes[par];
     const uint32_t half = (bytes / 2 + 15) & ~15u;  // root 0 takes the first half
-    for (int step = 1; step < world; ++step) {
-      const int j = (rank + step) % world;
+    own_bytes[par] = bytes;
+    // Mesh: channel j is rank j. Ring: next, then prev unless prev is next.
+    const int nchan = S.ring ? (world == 2 ? 1 : 2) : world - 1;
+    for (int step = 1; step <= nchan; ++step) {
+      const int c = S.ring ? 2 - step : (rank + step) % world;
       for (int r = 0; r < 2; ++r) {
         const uint32_t off = r ? half : 0, len = r ? bytes - half : half;
-        ibv_sge sg{(uint64_t)(S.send_h + par * kMaxBytes + off), len, S.send_mr[r]->lkey};
-        ibv_send_wr w{}, f{}, *bad;
-        w.opcode = IBV_WR_RDMA_WRITE; w.sg_list = &sg; w.num_sge = 1;
-        w.wr.rdma.remote_addr = S.all[j].recv_addr + ((uint64_t)par * world + rank) * kMaxBytes + off;
-        w.wr.rdma.rkey = S.all[j].recv_rkey[r];
-        uint64_t sv = seq;
-        ibv_sge fs{(uint64_t)&sv, 8, 0};
-        f.opcode = IBV_WR_RDMA_WRITE; f.sg_list = &fs; f.num_sge = 1; f.send_flags = IBV_SEND_INLINE;
-        f.wr.rdma.remote_addr = S.all[j].flag_addr + (rank * 2 + r) * 8; f.wr.rdma.rkey = S.all[j].flag_rkey[r];
-        // Unsignalled WRs are reclaimed only by a later signalled one on the
-        // same QP, so the count is per QP.
-        if ((++posted[j][r] & 31) == 0) f.send_flags |= IBV_SEND_SIGNALED;
-        w.next = &f;
-        if (int e = ibv_post_send(S.qp[j][r], &w, &bad)) {
-          fprintf(stderr, "arx rank %d: post to %d root %d failed: %s\n", rank, j, r, strerror(e));
+        if (!post(c, r, (uint64_t)(S.send_h + par * kMaxBytes + off), S.send_mr[chan_dev(c, r)]->lkey, len,
+                  ((uint64_t)par * world + rank) * kMaxBytes + off, rank * 2 + r, seq, posted[c][r])) {
           g_proxy_err = true;
           return;
         }
       }
     }
-    for (int r = 0; r < 2; ++r) {
+    for (int r = 0; r < S.ndev; ++r) {
       ibv_wc wc[16];
       const int n = ibv_poll_cq(S.cq[r], 16, wc);
       for (int i = 0; i < n; ++i)
@@ -271,53 +334,61 @@ void proxy_loop() {
 }
 }  // namespace
 
-// Allocates buffers, opens both roots, creates the QPs; returns this rank's
-// PeerInfo for the caller to all-gather.
-py::bytes arx_prepare(int64_t rank, int64_t world, std::string dev0, std::string dev1, int64_t gid_idx) {
+// Allocates buffers, opens the RDMA devices and creates the QPs. Returns this
+// rank's PeerInfo for the caller to all-gather. Mesh: devs are root 0 and root
+// 1. Ring: the port facing prev (root 0, root 1), then the port facing next.
+// gids: each device's GID index.
+py::bytes arx_prepare(int64_t rank, int64_t world, std::vector<std::string> devs, std::vector<int64_t> gids,
+                      bool ring) {
   TORCH_CHECK(S.rank < 0, "arx is already prepared in this process");
   TORCH_CHECK(world >= 2 && world <= kMaxWorld);
-  S.rank = rank; S.world = world; S.gid_idx = gid_idx;
+  TORCH_CHECK(!ring || world == 2 || world == 4, "arx ring mode supports world 2 or 4, not ", world);
+  S.ndev = ring ? 4 : 2;
+  TORCH_CHECK((int)devs.size() == S.ndev && (int)gids.size() == S.ndev, "arx: expected ", S.ndev, " devices");
+  S.rank = rank; S.world = world; S.ring = ring;
+  S.prev = (rank + world - 1) % world; S.next = (rank + 1) % world;
   CK(cudaHostAlloc(&S.send_h, 2 * kMaxBytes, cudaHostAllocMapped));
   CK(cudaHostAlloc(&S.recv_h, 2 * world * kMaxBytes, cudaHostAllocMapped));
   CK(cudaHostAlloc(&S.flag_h, 2 * kMaxWorld * sizeof(uint64_t), cudaHostAllocMapped));
   CK(cudaHostAlloc(&S.ctl, sizeof(Ctl), cudaHostAllocMapped));
   memset(S.flag_h, 0, 2 * kMaxWorld * sizeof(uint64_t));
   memset((void*)S.ctl, 0, sizeof(Ctl));
-  const char* names[2] = {dev0.c_str(), dev1.c_str()};
   int ndev;
   ibv_device** list = ibv_get_device_list(&ndev);
   const int acc = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
-  for (int r = 0; r < 2; ++r) {
+  for (int d = 0; d < S.ndev; ++d) {
+    S.gid_idx[d] = gids[d];
     for (int i = 0; i < ndev; ++i)
-      if (!strcmp(ibv_get_device_name(list[i]), names[r])) S.ctx[r] = ibv_open_device(list[i]);
-    TORCH_CHECK(S.ctx[r], "arx: no RDMA device ", names[r]);
-    S.pd[r] = ibv_alloc_pd(S.ctx[r]); IBCK(S.pd[r]);
-    S.send_mr[r] = ibv_reg_mr(S.pd[r], S.send_h, 2 * kMaxBytes, acc); IBCK(S.send_mr[r]);
-    S.recv_mr[r] = ibv_reg_mr(S.pd[r], S.recv_h, 2 * world * kMaxBytes, acc); IBCK(S.recv_mr[r]);
-    S.flag_mr[r] = ibv_reg_mr(S.pd[r], S.flag_h, 2 * kMaxWorld * sizeof(uint64_t), acc); IBCK(S.flag_mr[r]);
-    S.cq[r] = ibv_create_cq(S.ctx[r], 4096, nullptr, nullptr, 0); IBCK(S.cq[r]);
+      if (devs[d] == ibv_get_device_name(list[i])) S.ctx[d] = ibv_open_device(list[i]);
+    TORCH_CHECK(S.ctx[d], "arx: no RDMA device ", devs[d]);
+    S.pd[d] = ibv_alloc_pd(S.ctx[d]); IBCK(S.pd[d]);
+    S.send_mr[d] = ibv_reg_mr(S.pd[d], S.send_h, 2 * kMaxBytes, acc); IBCK(S.send_mr[d]);
+    S.recv_mr[d] = ibv_reg_mr(S.pd[d], S.recv_h, 2 * world * kMaxBytes, acc); IBCK(S.recv_mr[d]);
+    S.flag_mr[d] = ibv_reg_mr(S.pd[d], S.flag_h, 2 * kMaxWorld * sizeof(uint64_t), acc); IBCK(S.flag_mr[d]);
+    S.cq[d] = ibv_create_cq(S.ctx[d], 4096, nullptr, nullptr, 0); IBCK(S.cq[d]);
     ibv_gid gid;
-    IBCK(ibv_query_gid(S.ctx[r], 1, gid_idx, &gid) == 0);
-    memcpy(S.mine.gid[r], gid.raw, 16);
+    IBCK(ibv_query_gid(S.ctx[d], 1, S.gid_idx[d], &gid) == 0);
+    memcpy(S.mine.gid[d], gid.raw, 16);
     ibv_port_attr port{};
-    IBCK(ibv_query_port(S.ctx[r], 1, &port) == 0);
-    S.mine.mtu[r] = port.active_mtu;
-    S.mine.recv_rkey[r] = S.recv_mr[r]->rkey;
-    S.mine.flag_rkey[r] = S.flag_mr[r]->rkey;
+    IBCK(ibv_query_port(S.ctx[d], 1, &port) == 0);
+    S.mine.mtu[d] = port.active_mtu;
+    S.mine.recv_rkey[d] = S.recv_mr[d]->rkey;
+    S.mine.flag_rkey[d] = S.flag_mr[d]->rkey;
   }
   ibv_free_device_list(list);
-  for (int j = 0; j < world; ++j)
+  for (int c = 0; c < (ring ? 2 : world); ++c)
     for (int r = 0; r < 2; ++r) {
-      if (j == rank) continue;
+      if (!ring && c == rank) continue;
+      const int d = chan_dev(c, r);
       ibv_qp_init_attr ia{};
-      ia.send_cq = S.cq[r]; ia.recv_cq = S.cq[r]; ia.qp_type = IBV_QPT_RC;
+      ia.send_cq = S.cq[d]; ia.recv_cq = S.cq[d]; ia.qp_type = IBV_QPT_RC;
       ia.cap.max_send_wr = 1024; ia.cap.max_recv_wr = 1; ia.cap.max_send_sge = 1; ia.cap.max_recv_sge = 1;
       ia.cap.max_inline_data = 64;
-      S.qp[j][r] = ibv_create_qp(S.pd[r], &ia); IBCK(S.qp[j][r]);
+      S.qp[c][r] = ibv_create_qp(S.pd[d], &ia); IBCK(S.qp[c][r]);
       ibv_qp_attr a{};
       a.qp_state = IBV_QPS_INIT; a.pkey_index = 0; a.port_num = 1; a.qp_access_flags = acc;
-      IBCK(ibv_modify_qp(S.qp[j][r], &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) == 0);
-      S.mine.qpn[j][r] = S.qp[j][r]->qp_num;
+      IBCK(ibv_modify_qp(S.qp[c][r], &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) == 0);
+      S.mine.qpn[c][r] = S.qp[c][r]->qp_num;
     }
   S.mine.recv_addr = (uint64_t)S.recv_h;
   S.mine.flag_addr = (uint64_t)S.flag_h;
@@ -333,23 +404,26 @@ void arx_connect(std::vector<std::string> infos) {
     TORCH_CHECK(infos[j].size() == sizeof(PeerInfo), "arx: PeerInfo size mismatch");
     memcpy(&S.all[j], infos[j].data(), sizeof(PeerInfo));
   }
-  for (int j = 0; j < S.world; ++j)
+  for (int c = 0; c < (S.ring ? 2 : S.world); ++c)
     for (int r = 0; r < 2; ++r) {
-      if (j == S.rank) continue;
+      if (!S.ring && c == S.rank) continue;
+      const PeerInfo& p = S.all[chan_peer(c)];
+      const int d = chan_dev(c, r), rd = chan_rdev(c, r);
       ibv_qp_attr a{};
-      a.qp_state = IBV_QPS_RTR; a.path_mtu = (ibv_mtu)std::min(S.mine.mtu[r], S.all[j].mtu[r]); a.dest_qp_num = S.all[j].qpn[S.rank][r]; a.rq_psn = 0;
+      a.qp_state = IBV_QPS_RTR; a.path_mtu = (ibv_mtu)std::min(S.mine.mtu[d], p.mtu[rd]);
+      a.dest_qp_num = S.ring ? p.qpn[1 - c][r] : p.qpn[S.rank][r]; a.rq_psn = 0;
       a.max_dest_rd_atomic = 1; a.min_rnr_timer = 12;
       a.ah_attr.is_global = 1; a.ah_attr.port_num = 1; a.ah_attr.grh.hop_limit = 1;
-      a.ah_attr.grh.sgid_index = S.gid_idx;
-      memcpy(a.ah_attr.grh.dgid.raw, S.all[j].gid[r], 16);
-      IBCK(ibv_modify_qp(S.qp[j][r], &a, IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+      a.ah_attr.grh.sgid_index = S.gid_idx[d];
+      memcpy(a.ah_attr.grh.dgid.raw, p.gid[rd], 16);
+      IBCK(ibv_modify_qp(S.qp[c][r], &a, IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
                                              IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER) == 0);
-      if (j == (S.rank + 1) % S.world)
-        fprintf(stderr, "%s rank %d root %d: path MTU %d bytes (ours %d, peer %d)\n", "arx", S.rank, r,
-                128 << a.path_mtu, 128 << S.mine.mtu[r], 128 << S.all[j].mtu[r]);
+      if (S.ring || c == (S.rank + 1) % S.world)
+        fprintf(stderr, "arx rank %d%s root %d: path MTU %d bytes (ours %d, peer %d)\n", S.rank,
+                S.ring ? (c ? " next" : " prev") : "", r, 128 << a.path_mtu, 128 << S.mine.mtu[d], 128 << p.mtu[rd]);
       a = {};
       a.qp_state = IBV_QPS_RTS; a.timeout = 14; a.retry_cnt = 7; a.rnr_retry = 7; a.sq_psn = 0; a.max_rd_atomic = 1;
-      IBCK(ibv_modify_qp(S.qp[j][r], &a, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
+      IBCK(ibv_modify_qp(S.qp[c][r], &a, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
                                              IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC) == 0);
     }
   Dev& d = S.dev;
