@@ -58,7 +58,7 @@ and TP=6.
 `TP=RING4` runs TP=4 on four boxes cabled in a loop, with no switch: each box's
 two ConnectX-7 ports go to its two neighbours. mentat places the ranks in cable
 order, and every collective uses only neighbour links, relaying traffic for the
-opposite box through a neighbour. It needs mentat 0.17 or later on every daemon
+opposite box through a neighbour. It needs mentat 0.17.1 on every daemon
 and a subnet per cable for each PCIe root. We've only run it through a switch,
 where the relay hop cost about 1% of decode.
 [experimental/README.md](experimental/README.md) has the details.
@@ -165,8 +165,8 @@ and DFlash2 upstream, and the patches are small anchored edits that fail the
 build if the tree moves under them. The one thing the build compiles is
 FlashKDA (see Patches), in a builder stage that took 98 s on a GX10.
 `image/verify-base.py` then checks the finished tree. The image embeds mentat
-0.17.0, which refuses daemons older than 0.9, so `mentatd` and `mentatd-serve`
-should be 0.17.0 too.
+0.17.1. Run the same version everywhere: `mentatd` and `mentatd-serve` on
+every box should be 0.17.1 too.
 
 ## 3. Overrides in compose/.env (optional)
 
@@ -208,17 +208,17 @@ tools or `docker exec glm53 tail /logs/vllm.log`.
 ## 4. Start mentatd, and mentatd-serve on one box
 
 mentat has its own repo, compose files and `.env`. On every box, in a
-checkout of [mmastrac/mentat](https://github.com/mmastrac/mentat) at `v0.17.0`:
+checkout of [mmastrac/mentat](https://github.com/mmastrac/mentat) at `v0.17.1`:
 
-    VERSION=0.17.0 ./build.sh
+    VERSION=0.17.1 ./build.sh
     cat > .env <<'EOF'
     MENTAT_PEERS=<another box's LAN address>:6379
     MENTAT_ANNOUNCE_IFACES=en*f*np*=connectx+rdma,en*=lan
     EOF
     docker compose -f mentatd.yaml up -d
 
-Or skip the build and add `IMAGE=mmastrac/mentatd:0.17.0` to that `.env`
-(`mmastrac/mentatd-serve:0.17.0` for the router): the published images cover
+Or skip the build and add `IMAGE=mmastrac/mentatd:0.17.1` to that `.env`
+(`mmastrac/mentatd-serve:0.17.1` for the router): the published images cover
 arm64.
 
 The model reads its networking from `MENTAT_ANNOUNCE_IFACES`. Tag the LAN

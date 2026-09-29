@@ -46,9 +46,8 @@ ARG VLLM_REF=ddd6fbca148a867aad1fcab7ec72f582b9977db4
 # Pulled registry-qualified: a bare `mentat-artifacts:<ver>` tag resolves to a
 # local image, and those have been mislabelled before -- every image "pinned"
 # to 0.4.0 once silently ran 0.1.0. Verify with `mentatd --version`.
-# Must match the fleet's host daemons: 0.17.0 speaks protocol 0.99, and a shim
-# from 0.8 or older cannot join them.
-ARG MENTAT_VERSION=0.17.0
+# Must match the host daemons: the README asks for one mentat version on every box.
+ARG MENTAT_VERSION=0.17.1
 
 FROM mmastrac/mentat-artifacts:${MENTAT_VERSION} AS mentat
 
