@@ -21,6 +21,14 @@ set -euo pipefail
 
 TP="${TP:-4}"
 MTP="${MTP:-1}"
+# TP=RING4 is TP=4 on four boxes cabled in a loop with no switch. mentat
+# places the ranks in cable order, and fabric_ring.py sets each rank's NCCL
+# and arx devices from the neighbours mentat gives it.
+FABRIC_LAYOUT=mesh
+if [[ "$TP" == RING4 ]]; then
+  TP=4; FABRIC_LAYOUT=ring
+  export MENTAT_CLAIM_LAYOUT=ring
+fi
 
 # --- per-TP defaults ---------------------------------------------------------
 # Each rank holds 1/TP of the weights and of every request's KDA state, so
@@ -63,7 +71,7 @@ case "$TP" in
      (( _rs )) && : "${MAX_NUM_SEQS:=16}" "${VLLM_ADAPTIVE_K_MODEL:=32.1,1.32,0.427}"
      : "${MAX_NUM_SEQS:=4}"
      : "${VLLM_ADAPTIVE_K_MODEL:=35.0,1.27,0.8}" ;;
-  *) echo "FATAL: TP=$TP; this recipe is tuned for TP=4 (four boxes), TP=3 (three) or TP=2 (two)" >&2; exit 1 ;;
+  *) echo "FATAL: TP=$TP; this recipe is tuned for TP=4 or TP=RING4 (four boxes), TP=3 (three) or TP=2 (two)" >&2; exit 1 ;;
 esac
 export VLLM_ADAPTIVE_K_MODEL
 # SPEC_METHOD picks the drafter: dflash (the separate DFlash2 draft model at
@@ -205,7 +213,9 @@ if [[ -z "${NCCL_IB_HCA:-}" || -z "${NCCL_IB_GID_INDEX:-}" ]]; then
   # index differs gets asked for a GID it does not have and QP setup dies with
   # "local GID ::". One IPv4 per fabric interface keeps them aligned; refuse the
   # list rather than hand NCCL one that cannot work.
-  if [[ -n "$_mismatch" ]]; then
+  # A ring gives each cable its own subnet, and fabric_ring.py picks each
+  # device's GID by address instead.
+  if [[ -n "$_mismatch" && "$FABRIC_LAYOUT" == mesh ]]; then
     echo "FATAL: fabric ports disagree on GID index ($_mismatch)." >&2
     echo "Each fabric interface must carry exactly one IPv4 address." >&2
     exit 1
