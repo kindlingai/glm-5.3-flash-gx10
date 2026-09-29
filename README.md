@@ -25,17 +25,17 @@ Each of these lives in `experimental/`, replaces files inside the image this
 repo builds, and can be turned off. [experimental/README.md](experimental/README.md)
 has the details.
 
-| | TP=4, four boxes | TP=2, two boxes | TP=3, three boxes | TP=6, six boxes |
+| | TP=2 | TP=3 | TP=4 | TP=6 |
 |---|---|---|---|---|
-| prefill @32k, cold | 4,981 tok/s | 2,929 tok/s | 3,847 tok/s | 4,907 tok/s |
-| prefill @128k, cold | 4,822 tok/s | 2,864 tok/s | 3,648 tok/s | 4,731 tok/s |
-| decode, code / prose / structured | 114.6 / 59.5 / 161.6 tok/s | 60.5 / 36.4 / 89.5 tok/s | 79.8 / 45.2 / 119.8 tok/s | 120.3 / 66.5 / 176.4 tok/s |
-| code, 1 / 2 / 4 / 8 streams, aggregate | 129 / 150 / 201 / 240 tok/s | 74 / 84 / 117 / 130 tok/s | 89 / 107 / 146 / 173 tok/s | 145 / 154 / 219 / 282 tok/s |
-| KV pool (fp8_e4m3) | 4.40M tokens, 26 GiB pin | 1.10M tokens, 8 GiB pin | 1.91M tokens, 12 GiB pin | 4.47M tokens, 26 GiB pin |
-| longest request | 524k tokens | 160k tokens | 524k tokens | 524k tokens |
-| requests decoding at once | 64 | 16 | 64 | 64 |
+| prefill @32k, cold | 2,929 tok/s | 3,847 tok/s | 4,981 tok/s | 4,907 tok/s |
+| prefill @128k, cold | 2,864 tok/s | 3,648 tok/s | 4,822 tok/s | 4,731 tok/s |
+| decode, code / prose / structured | 60.5 / 36.4 / 89.5 tok/s | 79.8 / 45.2 / 119.8 tok/s | 114.6 / 59.5 / 161.6 tok/s | 120.3 / 66.5 / 176.4 tok/s |
+| code, 1 / 2 / 4 / 8 streams, aggregate | 74 / 84 / 117 / 130 tok/s | 89 / 107 / 146 / 173 tok/s | 129 / 150 / 201 / 240 tok/s | 145 / 154 / 219 / 282 tok/s |
+| KV pool (fp8_e4m3) | 1.10M tokens, 8 GiB pin | 1.91M tokens, 12 GiB pin | 4.40M tokens, 26 GiB pin | 4.47M tokens, 26 GiB pin |
+| longest request | 160k tokens | 524k tokens | 524k tokens | 524k tokens |
+| requests decoding at once | 16 | 64 | 64 | 64 |
 | boot, once snapshots exist | ~3 min | ~3 min | ~3 min | not measured |
-| needle recall | 12/12 up to 507k tokens | 6/6 up to 128k tokens | 12/12 up to 507k tokens | 12/12 up to 480k tokens |
+| needle recall | 6/6 up to 128k tokens | 12/12 up to 507k tokens | 12/12 up to 507k tokens | 12/12 up to 480k tokens |
 
 Prefill is first-touch on random words, so nothing is cached. Decode is
 [RigMark](https://github.com/alexellis/rigmark)'s single-stream decode at
