@@ -134,12 +134,13 @@ RUN python3 /tmp/glm53_mtp_bf16.py && rm /tmp/glm53_mtp_bf16.py
 COPY image/patches/glm53_reasoning_always_parsed.py /tmp/glm53_reasoning_always_parsed.py
 RUN python3 /tmp/glm53_reasoning_always_parsed.py && rm /tmp/glm53_reasoning_always_parsed.py
 
-# The kpool indexer's top-k returns the right pools in a run-dependent order,
-# and the sparse MLA kernel sums keys in list order, so identical requests past
-# 2048 tokens rounded differently and then selected different keys. Sorting
-# each row fixes the order.
-COPY image/patches/glm53_sorted_topk.py /tmp/glm53_sorted_topk.py
-RUN python3 /tmp/glm53_sorted_topk.py && rm /tmp/glm53_sorted_topk.py
+# The kpool indexer's top-k returns the right pools in a run-dependent order and
+# keeps a run-dependent subset of pools tied at the k-th score. The sparse MLA
+# kernel sums keys in list order, so identical requests past 2048 tokens rounded
+# differently and then selected different keys. The patch breaks ties by pool id
+# and sorts each row.
+COPY image/patches/glm53_deterministic_topk.py /tmp/glm53_deterministic_topk.py
+RUN python3 /tmp/glm53_deterministic_topk.py && rm /tmp/glm53_deterministic_topk.py
 
 # vllm#58720 (ad6817b) landed after this nightly: RoutedExperts indexes the
 # expert mapping by weight name once, instead of scanning it for every tensor.
