@@ -1092,6 +1092,8 @@ def get_max_concurrency_for_kv_cache_config(
     call sites agree.
 
     Host groups use a separate pool; the smaller concurrency limit applies.
+    GLM53-DRAFT-POOL: the drafter's groups draw from their own pool, sized for
+    max_num_seqs requests by _glm5_next_draft_pool_blocks, so they are left out.
     """
     num_blocks_per_request = 0
     host_blocks_per_request = 0
@@ -1102,6 +1104,9 @@ def get_max_concurrency_for_kv_cache_config(
         )
         if group.host_resident:
             host_blocks_per_request += required
+        elif (kv_cache_config.draft_num_blocks is not None and group.layer_names
+              and group.layer_names[0] in kv_cache_config.draft_layer_names):
+            continue
         else:
             num_blocks_per_request += required
     limits = [kv_cache_config.num_blocks / num_blocks_per_request]
