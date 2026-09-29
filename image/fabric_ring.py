@@ -48,10 +48,13 @@ def _graph_xml(nccl_index: dict[str, int], prev: list[str], nxt: list[str], ncha
         f'<net dev="{nccl_index[nxt[c % 2]]}"/></channel>'
         for c in range(nchannels)
     )
+    # The speeds and path types are what NCCL computes for its own ring on
+    # these boxes. It picks protocols and chunk sizes from them, which set
+    # the order its reductions sum in.
     return (
         '<graphs version="1">'
-        f'<graph id="0" pattern="4" crossnic="1" nchannels="{nchannels}" speedintra="12" '
-        'speedinter="12" latencyinter="0" typeintra="LOC" typeinter="PIX" samechannels="0">'
+        f'<graph id="0" pattern="4" crossnic="1" nchannels="{nchannels}" speedintra="0.24" '
+        'speedinter="0.24" latencyinter="0" typeintra="LOC" typeinter="P2C" samechannels="1">'
         f"{chans}</graph></graphs>\n"
     )
 
