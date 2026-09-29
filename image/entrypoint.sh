@@ -393,6 +393,9 @@ fi
 # group; every rank of this deployment must carry the same value. Running the
 # same model twice means two compose stacks with DISTINCT MENTAT_GROUP values.
 export MENTAT_GROUP="${MENTAT_GROUP:-${SERVICE_NAME:-glm53}}"
+# The shim reads MENTAT_CLAIM_LAYOUT only when it makes a claim, which needs a
+# claim name.
+[[ "$FABRIC_LAYOUT" == ring ]] && export MENTAT_CLAIM="${MENTAT_CLAIM:-$MENTAT_GROUP}"
 
 # Pin the executor the mentat shim was audited against. It is vLLM's default
 # today (verified in this image AND the DS4 tree), but the default is
