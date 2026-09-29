@@ -18,11 +18,11 @@ one can be turned off.
 
 | | TP=4, four boxes | TP=2, two boxes |
 |---|---|---|
-| prefill @32k, cold | 4,981 tok/s | 3,201 tok/s |
-| prefill @128k, cold | 4,822 tok/s | 3,160 tok/s |
+| prefill @32k, cold | 4,981 tok/s | 2,929 tok/s |
+| prefill @128k, cold | 4,822 tok/s | 2,864 tok/s |
 | decode, code / prose / structured | 106.6 / 59.5 / 161.6 tok/s | 60.5 / 36.4 / 89.5 tok/s |
 | code, 1 / 2 / 4 / 8 streams, aggregate | 129 / 150 / 201 / 240 tok/s | 74 / 84 / 117 / 130 tok/s |
-| KV pool (fp8_e4m3) | 3.99M tokens, 26 GiB pin | 334k tokens, 4 GiB pin |
+| KV pool (fp8_e4m3) | 3.99M tokens, 26 GiB pin | 875k tokens, 8 GiB pin |
 | longest request | 524k tokens | 160k tokens |
 | requests decoding at once | 64 | 16 |
 | boot, once snapshots exist | ~2 min | not measured yet |
@@ -34,8 +34,10 @@ reasoning effort low, with every output gate passing. Streams each generate
 512 tokens from a different code prompt (`gate/conc_workload.py`).
 
 TP=4 is the default. For two boxes, put `TP=2` in `compose/.env` on both, and
-the entrypoint picks the two-box KV pin, context length and request limit. Two
-boxes keep 6-9 GiB of memory free and decode 16 requests at once.
+the entrypoint picks the two-box KV pin, context length, request limit and
+batch budget. Two boxes use an 8192-token batch budget instead of 16384. That
+costs ~9% of prefill speed and frees the memory for an 8 GiB KV pin, 2.6
+times the tokens of a 4 GiB one.
 
 [model.yaml](model.yaml) has the checkpoints and the memory footprint, and
 [KNOBS.md](KNOBS.md) lists every environment variable the entrypoint reads.
@@ -330,8 +332,8 @@ into the image.
 | knob | value | why |
 |---|---|---|
 | `LONG_PREFILL_TOKEN_THRESHOLD` | 2304 | Caps one prefill's share of each scheduler step. Left at the default (budget − 256) a 120k prefill takes the whole step and a 12-token request waits 78–90 s; at 2304 it waited 4.83 s (2026-09-06). Must be a multiple of 2304, the KDA block size, because prefix caching snaps chunk ends to it: 2048 yields alternating 2048/256-token chunks. Costs nothing: the 200k prefill got *faster*. |
-| `MAX_NUM_BATCHED_TOKENS` | 16384 | Measured the same as 8192 at 200k once chunks are capped (234.1 s against 237.7 s, 2026-09-06). |
-| `KV_CACHE_MEMORY` | 26 GiB | 2.63M tokens with DFlash2. Pinned, `--gpu-memory-utilization` no longer sizes the pool, and vLLM says so at startup. At 28 GiB the head sat near 1 GiB free and eight long requests had a worker OOM-killed. |
+| `MAX_NUM_BATCHED_TOKENS` | 16384 | Measured the same as 8192 at 200k once chunks are capped (234.1 s against 237.7 s, 2026-09-06). TP=2 uses 8192: its prefill activations peak 2.8 GiB lower on the head, which pays for the larger KV pin, and 128k prefill is ~9% slower (2026-09-28). |
+| `KV_CACHE_MEMORY` | 26 GiB | 8 GiB at TP=2, which leaves the head 1.3 GiB free through five concurrent 150k-token requests. 2.63M tokens with DFlash2. Pinned, `--gpu-memory-utilization` no longer sizes the pool, and vLLM says so at startup. At 28 GiB the head sat near 1 GiB free and eight long requests had a worker OOM-killed. |
 | `FABRIC_SUBNETS` | every address mentatd tags `rdma` | Each GB10's ConnectX-7 sits on two PCIe roots and one root tops out near 110 Gb/s. NCCL over both doubles all-reduce bandwidth (110 to 190 Gb/s) and took a 126k prefill from 2,412 to 2,680 tok/s (2026-09-26); decode did not move. Needs an IPv4 on the second root's interface in its own subnet, MTU 9000, the same RoCE v2 GID index on both roots, and both interfaces tagged `rdma` (step 4). To set it by hand instead, quote it and separate the subnets with spaces (`FABRIC_SUBNETS="198.18.0. 198.19.0."`). With only `CLUSTER_SUBNET` set, NCCL uses that one root. The numbers at the top use both. |
 | `MAX_NUM_SEQS` | 32 | Each running request holds a KDA recurrent state for every verify position (1+k = 8 at k=7) out of the KV pool, so the pool caps this, not throughput. With the overrides RecoverSSM keeps one state per request, and the default rises to 64 at TP=4 and 16 at TP=2. At 64, 64 × (1+k) = 512 tokens is the largest CUDA graph. |
 | DFlash2 `k=7` | | Decodes 121.9 / 91.3 / 38.7 tok/s structured / code / prose on this image without the overrides (`dev/repro/decode.py`, thinking off). On an earlier image (2026-09-23) it gave 109.8 / 88.8 / 52.6, and the checkpoint's own MTP head at k=4 gave 57.2 / 54.4 / 45.6. Costs ~41% of the KV pool: 3.44M tokens with speculation off, 2.02M with it at the same pin, on the pre-nightly image (2026-09-06). |

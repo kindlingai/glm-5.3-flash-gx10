@@ -28,7 +28,7 @@ MTP="${MTP:-1}"
 # fill in whatever .env leaves out. TP=4 is the measured four-box setup. TP=2
 # is two boxes with 89.6 GiB of weights per rank. Halving the batched-token
 # budget to 8192 shrinks the activation peak by ~2.8 GiB on the head, at
-# ~10% of prefill speed, and an 8 GiB KV pin then leaves the head 1.4 GiB free
+# ~9% of prefill speed, and an 8 GiB KV pin then leaves the head 1.4 GiB free
 # at its lowest. At 16384 an 8 GiB pin got a worker OOM-killed mid-prefill.
 # Each rank carries half the KDA heads, so a request's states are twice as big.
 # RecoverSSM (recoverssm.yaml) keeps one state per request instead of 1 + k:
