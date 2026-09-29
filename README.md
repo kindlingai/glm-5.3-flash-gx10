@@ -46,6 +46,15 @@ TP=4 is the default. For two boxes, put `TP=2` in `compose/.env` on both.
 Each box then holds twice the weights, so the entrypoint picks a smaller KV
 pin, context length, request limit and batch budget.
 
+`TP=RING4` is TP=4 on four boxes cabled in a loop instead of through a switch:
+each box's two ConnectX-7 ports go to its two neighbours. mentat places the
+ranks in cable order, and every collective uses only neighbour links, with
+data for the opposite box relayed through a neighbour. It needs mentat 0.17 or
+later on every daemon, since mentat's head places the ranks, and a subnet per
+cable for each PCIe root. So far it has run only on a switch, where decode was
+~1% slower than TP=4 from the relay hop.
+[experimental/README.md](experimental/README.md) has the details.
+
 [model.yaml](model.yaml) has the checkpoints and the memory footprint, and
 [KNOBS.md](KNOBS.md) lists every environment variable the entrypoint reads.
 [NOTES.md](NOTES.md) has the measurements and diagnosis behind the choices
@@ -61,11 +70,12 @@ here.
   the model: `sudo systemctl set-default multi-user.target && sudo systemctl
   isolate multi-user.target`. The preflight warns while one is running.
 - **A ConnectX-7 fabric between them**, through one switch (ours is a
-  MikroTik CRS812 at 200G), with RoCE working. Each box needs a static IPv4
-  on its ConnectX interface, all in one subnet, MTU 9000. For full prefill
-  speed also give the ConnectX-7's second PCIe root an address in a second
-  subnet on every box (see `FABRIC_SUBNETS` in Tuning). mentatd tells the
-  model which subnets these are (step 4).
+  MikroTik CRS812 at 200G), or cabled in a loop for `TP=RING4`, with RoCE
+  working. Through a switch, each box needs a static IPv4 on its ConnectX
+  interface, all in one subnet, MTU 9000. For full prefill speed also give
+  the ConnectX-7's second PCIe root an address in a second subnet on every
+  box (see `FABRIC_SUBNETS` in Tuning). mentatd tells the model which
+  subnets these are (step 4).
 - **A LAN between them** that your clients can reach. mentat identifies
   each box by its LAN address, and the API is served on it.
 - **The weights on each box's local disk**, not on NFS: every rank reads the
@@ -146,8 +156,8 @@ and DFlash2 upstream, and the patches are small anchored edits that fail the
 build if the tree moves under them. The one thing the build compiles is
 FlashKDA (see Patches), in a builder stage that took 98 s on a GX10.
 `image/verify-base.py` then checks the finished tree. The image embeds mentat
-0.14.0, which refuses daemons older than 0.9, so `mentatd` and `mentatd-serve`
-should be 0.14.0 too.
+0.17.0, which refuses daemons older than 0.9, so `mentatd` and `mentatd-serve`
+should be 0.17.0 too.
 
 ## 3. Overrides in compose/.env (optional)
 
@@ -189,17 +199,17 @@ tools or `docker exec glm53 tail /logs/vllm.log`.
 ## 4. Start mentatd, and mentatd-serve on one box
 
 mentat has its own repo, compose files and `.env`. On every box, in a
-checkout of [mmastrac/mentat](https://github.com/mmastrac/mentat) at `v0.14.0`:
+checkout of [mmastrac/mentat](https://github.com/mmastrac/mentat) at `v0.17.0`:
 
-    VERSION=0.14.0 ./build.sh
+    VERSION=0.17.0 ./build.sh
     cat > .env <<'EOF'
     MENTAT_PEERS=<another box's LAN address>:6379
     MENTAT_ANNOUNCE_IFACES=en*f*np*=connectx+rdma,en*=lan
     EOF
     docker compose -f mentatd.yaml up -d
 
-Or skip the build and add `IMAGE=mmastrac/mentatd:0.14.0` to that `.env`
-(`mmastrac/mentatd-serve:0.14.0` for the router): the published images cover
+Or skip the build and add `IMAGE=mmastrac/mentatd:0.17.0` to that `.env`
+(`mmastrac/mentatd-serve:0.17.0` for the router): the published images cover
 arm64.
 
 The model reads its networking from `MENTAT_ANNOUNCE_IFACES`. Tag the LAN

@@ -75,7 +75,7 @@ Meaning and rationale stay in the entrypoint and compose comments.
 | `TOOL_PARSER` | `glm47_failclosed` |
 | `TOPK_BACKEND` | `per_row` |
 | `TORCH_MEM_FRACTION` | `0.92` |
-| `TP` | `4` |
+| `TP` | `4` (or `2`, `3`, `RING4`) |
 | `TRITON_CACHE_DIR` | `${CACHE_ROOT}/${SHARED_TAG}/triton` _(derived)_ |
 | `VLLM_ENGINE_READY_TIMEOUT_S` | `3600` |
 | `VLLM_GLM5NEXT_RECOVERSSM` | `0` (1 with recoverssm.yaml) |

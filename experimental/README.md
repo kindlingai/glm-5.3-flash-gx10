@@ -31,8 +31,8 @@ Leave a compose file out to drop that piece, or set its switch in `.env` (every 
 | `VLLM_ARXBIG` | 1 | arxbig RDMA collectives for prefill (arx.yaml) |
 | `VLLM_ARXBIG_AG` | 0 | route prefill all-gathers through arxbig; off because its output sits in pinned memory, where GEMMs reading it run 3.7x slower |
 | `VLLM_ARXBIG_RS` | 1 | RDMA reduce-scatter buffers (~0.5 GB pinned per rank); needed by `VLLM_GLM_SP_MOE_FUSED` |
-| `VLLM_ARX_RING` | 0 | for boxes cabled in a ring with no switch (TP=4 or 2): arx and arxbig open QPs only to rank r-1 and r+1, and the rank between two others relays their data, with the same results as over the switch. Needs the two below, and rank r's next port cabled to rank r+1's prev port |
-| `ARX_RING_PREV_HCAS` | unset | with `VLLM_ARX_RING=1`: the RDMA devices, root 0 then root 1, of the port cabled to rank r-1. Set per node. Each device uses the GID of its own IPv4 address |
+| `VLLM_ARX_RING` | 0 (1 with `TP=RING4`) | for boxes cabled in a ring with no switch: arx and arxbig open QPs only to rank r-1 and r+1, and the rank between two others relays their data, with the same results as over the switch |
+| `ARX_RING_PREV_HCAS` | from mentat with `TP=RING4` | with `VLLM_ARX_RING=1`: the RDMA devices, root 0 then root 1, of the port cabled to rank r-1. Each device uses the GID of its own IPv4 address |
 | `ARX_RING_NEXT_HCAS` | unset | the same for the port cabled to rank r+1 |
 | `VLLM_GLM_SP_TP` | 1 | sequence parallelism for forwards of `VLLM_GLM_SP_MIN_TOKENS` (1024) or more (sp.yaml) |
 | `VLLM_GLM_SP_FP8_GATHER` | 1 | gather KDA attention inputs as FP8 |
@@ -202,6 +202,22 @@ Boot goes from about 8 minutes to about 3.5 once snapshots exist.
   incast drops packets and go-back-N retransmits make individual calls vary
   (4-9 ms); per-destination serialization was worse (two QPs cannot fill a
   link).
+- **ring** (`TP=RING4`; `image/fabric_ring.py`, ring mode in `arx/`): TP=4 on
+  four boxes cabled in a loop. A ConnectX-7 can't forward RoCE for another
+  box, because RoCE addressed to its MAC goes to its own RDMA engine, so every
+  collective uses only neighbour links. mentat 0.17's ring claim places rank i
+  on member i in cable order and gives each rank its interface toward each
+  neighbour. `fabric_ring.py` runs at each rank's Python start and turns that
+  into NCCL's ring algorithm with a channel graph that receives on the port
+  toward the previous rank and sends on the port toward the next, and into
+  arx's devices. The graph carries the speeds NCCL computes for its own ring:
+  with others it picked other protocols, the reductions summed in another
+  order, and a greedy text diverged. arx and arxbig relay data for the
+  opposite box through a neighbour, raw, so every rank sums the same values
+  in rank order and results stay bit-identical. Each cable needs its own
+  subnet for each PCIe root. On a switch, with both neighbours on the one
+  port, `arx/test_ring.py` passed bit for bit, decode was ~1% slower from the
+  relay and prefill 3-4% slower (2026-09-28). Not yet measured on cables.
 - **arx prefetch** (`VLLM_GLM_ARX_PREFETCH`): while a decode all-reduce waits
   for its peers, its threads ask L2 for the weights the next kernels read (the
   router gate and shared expert after attention, the next in_proj after the
