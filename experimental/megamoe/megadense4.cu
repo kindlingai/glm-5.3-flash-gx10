@@ -1,5 +1,5 @@
 // megadense4: W4A16 dense GEMM for decode-sized batches on GB10 (sm_121a),
-// y[m][n] = gscale * sum_k x[m][k] w[n][k], M <= 32, and the dequantization
+// y[m][n] = gscale * sum_k x[m][k] w[n][k], M <= 64, and the dequantization
 // that larger batches use to hand the weight to cuBLAS.
 //
 // Weights are NVFP4 (e2m1 values, e4m3 scale per 16 k, one fp32 global scale)
@@ -114,24 +114,52 @@ __global__ void __launch_bounds__(TILES * KSPLIT * 32) dense_w4(
   uint32_t S = 0;
   if (c0 < c1) { A0 = ld_stream(w0 + (size_t)c0 * 1024); A8 = ld_stream(w0 + (size_t)c0 * 1024 + 512); S = __ldg(sp + c0 * 32); }
   for (int cc = c0; cc < c1; ++cc) {
-    uint4 X[MT][4];
+    if constexpr (MT <= 4) {
+      uint4 X[MT][4];
 #pragma unroll
-    for (int mt = 0; mt < MT; ++mt) load_x(X[mt], x, mt * 8 + g, M, K, cc * 128 + 32 * t);
-    const uint4 cA0 = A0, cA8 = A8;
-    const uint32_t cS = S;
-    if (cc + 1 < c1) {
-      A0 = ld_stream(w0 + (size_t)(cc + 1) * 1024); A8 = ld_stream(w0 + (size_t)(cc + 1) * 1024 + 512);
-      S = __ldg(sp + (cc + 1) * 32);
-    }
+      for (int mt = 0; mt < MT; ++mt) load_x(X[mt], x, mt * 8 + g, M, K, cc * 128 + 32 * t);
+      const uint4 cA0 = A0, cA8 = A8;
+      const uint32_t cS = S;
+      if (cc + 1 < c1) {
+        A0 = ld_stream(w0 + (size_t)(cc + 1) * 1024); A8 = ld_stream(w0 + (size_t)(cc + 1) * 1024 + 512);
+        S = __ldg(sp + (cc + 1) * 32);
+      }
 #pragma unroll
-    for (int j = 0; j < 8; ++j) {
-      uint32_t a[4];
-      a_frag(a, cA0, cA8, cS, j);
+      for (int j = 0; j < 8; ++j) {
+        uint32_t a[4];
+        a_frag(a, cA0, cA8, cS, j);
 #pragma unroll
-      for (int mt = 0; mt < MT; ++mt) {
-        const uint4& xv = X[mt][j >> 1];
-        const int wi = (j & 1) * 2;
-        mma16816(c[mt], a, word(xv, wi), word(xv, wi + 1));
+        for (int mt = 0; mt < MT; ++mt) {
+          const uint4& xv = X[mt][j >> 1];
+          const int wi = (j & 1) * 2;
+          mma16816(c[mt], a, word(xv, wi), word(xv, wi + 1));
+        }
+      }
+    } else {
+      // Past 4 tiles, all of them holding x for the whole chunk runs out of
+      // registers. Decode the chunk's weights once, then run the rows in two
+      // halves of up to 4 tiles each, loading x one half at a time.
+      const uint4 cA0 = A0, cA8 = A8;
+      const uint32_t cS = S;
+      if (cc + 1 < c1) {
+        A0 = ld_stream(w0 + (size_t)(cc + 1) * 1024); A8 = ld_stream(w0 + (size_t)(cc + 1) * 1024 + 512);
+        S = __ldg(sp + (cc + 1) * 32);
+      }
+      uint32_t a[8][4];
+#pragma unroll
+      for (int j = 0; j < 8; ++j) a_frag(a[j], cA0, cA8, cS, j);
+#pragma unroll
+      for (int h = 0; h < 2; ++h) {
+        uint4 X[4][4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i)
+          if (h * 4 + i < MT) load_x(X[i], x, (h * 4 + i) * 8 + g, M, K, cc * 128 + 32 * t);
+#pragma unroll
+        for (int j = 0; j < 8; ++j)
+#pragma unroll
+          for (int i = 0; i < 4; ++i)
+            if (h * 4 + i < MT)
+              mma16816(c[h * 4 + i], a[j], word(X[i][j >> 1], (j & 1) * 2), word(X[i][j >> 1], (j & 1) * 2 + 1));
       }
     }
   }
@@ -195,7 +223,7 @@ __global__ void dequant_w4(const uint8_t* __restrict__ w, const uint32_t* __rest
 void megadense4(torch::Tensor x, torch::Tensor w, torch::Tensor s, torch::Tensor gscale, torch::Tensor y,
                 int64_t variant) {
   const int M = x.size(0), K = x.size(1), N = y.size(1);
-  TORCH_CHECK(M >= 1 && M <= 32 && K % 128 == 0 && N % 16 == 0 && x.is_contiguous() && y.is_contiguous());
+  TORCH_CHECK(M >= 1 && M <= 64 && K % 128 == 0 && N % 16 == 0 && x.is_contiguous() && y.is_contiguous());
   TORCH_CHECK(w.numel() == (int64_t)N * K / 2 && s.numel() * 4 == (int64_t)N * K / 16);
   auto stream = at::cuda::getCurrentCUDAStream();
   auto launch = [&](auto tiles, auto ksplit, auto mt) {
@@ -222,7 +250,11 @@ void megadense4(torch::Tensor x, torch::Tensor w, torch::Tensor s, torch::Tensor
   if (M <= 8) go(integral_constant<int, 1>{});
   else if (M <= 16) go(integral_constant<int, 2>{});
   else if (M <= 24) go(integral_constant<int, 3>{});
-  else go(integral_constant<int, 4>{});
+  else if (M <= 32) go(integral_constant<int, 4>{});
+  else if (M <= 40) go(integral_constant<int, 5>{});
+  else if (M <= 48) go(integral_constant<int, 6>{});
+  else if (M <= 56) go(integral_constant<int, 7>{});
+  else go(integral_constant<int, 8>{});
 }
 
 void dequant4(torch::Tensor w, torch::Tensor s, torch::Tensor gscale, torch::Tensor out) {

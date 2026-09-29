@@ -14,9 +14,9 @@ layers whose weight other code reads directly (kv_b_proj, the indexer's
 wk_weights_proj). The lm_head converts too unless VLLM_DENSE_FP8_LM_HEAD=0.
 
 Layers whose names match VLLM_DENSE_W4 go to NVFP4 instead (W4A16 through
-megadense4.cu, at the 4-bit roofline for up to 32 tokens; larger batches use
-an FP8 copy kept alongside). Half the bytes again, at a quality cost that
-depends on the layer: the KDA in_proj alone cost about as much NLL as FP8 on
+megadense4.cu, for up to 64 tokens where _W4_PLAN says so and 32 elsewhere;
+larger batches use an FP8 copy kept alongside). Half the bytes again, at a
+quality cost that depends on the layer: the KDA in_proj alone cost about as much NLL as FP8 on
 everything, all dense layers about 2-3x that. The DFlash drafter's layers
 only change acceptance, never the output.
 """
@@ -35,6 +35,19 @@ from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 logger = init_logger(__name__)
 
 _ROWS = 2048
+# megadense4 launch per (N, K) weight shape and 8-row bucket of the batch (1-8,
+# 9-16, ..., 57-64): the variant (tens digit K split, units digit tiles per
+# block, 1 = 4 tiles unsplit), or None for the FP8 copy: the fastest of every
+# variant and CUTLASS FP8 on GB10 for each TP=4 shape. Past 24 rows every block
+# re-reads the whole batch, so fewer warps per tile and fewer blocks win. Other
+# shapes use megadense4's default launch up to 32 rows, and FP8 above.
+_W4_PLAN = {
+    (6416, 4096): [81, 81, 41, 82, 41, 41, 41, 1],               # KDA in_proj
+    (4096, 4096): [81, 81, 81, 82, 21, 21, 21, 21],              # MLA o_proj
+    (4096, 2048): [42, 42, 21, 21, 21, 21, 21, 21],              # KDA o_proj
+    (1024, 4096): [82, 82, 82, None, None, None, None, None],    # shared gate_up
+    (4096, 512): [41, 21, 21, 21, 21, 21, None, None],           # shared down
+}
 _L2_WEIGHT_BYTES = 16 << 20
 _EXCLUDE = re.compile(r"(^|\.)(gate|kv_b_proj|wk_weights_proj|index_kpool_compress_gate)$|(^|\.)visual\.")
 
@@ -147,10 +160,12 @@ class W4DenseLinearMethod(LinearMethodBase):
         if x2.shape[0] == 0:
             return _trim(layer, x.new_empty(*shape[:-1], N))
         M = x2.shape[0]
-        if M > 32 or x2.dtype != torch.bfloat16:  # past 32 tokens the FP8 copy is faster
+        plan = _W4_PLAN.get((N, K))
+        variant = (plan[(M - 1) // 8] if M <= 64 else None) if plan else (0 if M <= 32 else None)
+        if variant is None or x2.dtype != torch.bfloat16:
             return _trim(layer, _fp8_linear(x, layer.weight_fp8, layer.weight_fp8_scale, bias))
         y = torch.empty(M, N, dtype=torch.bfloat16, device=x.device)
-        _w4_ext.gemm(x2.contiguous(), layer.weight, layer.weight_scale, layer.weight_scale_2, y, 0)
+        _w4_ext.gemm(x2.contiguous(), layer.weight, layer.weight_scale, layer.weight_scale_2, y, variant)
         if bias is not None:
             y += bias
         return _trim(layer, y.reshape(*shape[:-1], N))
@@ -169,7 +184,7 @@ class W4LMHeadMethod(W4DenseLinearMethod):
 def _quantize_w4(module: torch.nn.Module) -> int:
     """NVFP4 with round to nearest: e4m3 scale per 16 k, one fp32 scale per
     tensor, packed into megadense4.cu's tiled layout. Also keeps an FP8 copy
-    for batches of more than 32 tokens, where megadense4 loses to CUTLASS."""
+    for the batch sizes where megadense4 loses to CUTLASS (see _W4_PLAN)."""
     w = module.weight.data
     N, K = w.shape
     wq8, ws8 = ops.scaled_fp8_quant(w.contiguous(), use_per_token_if_dynamic=True)
