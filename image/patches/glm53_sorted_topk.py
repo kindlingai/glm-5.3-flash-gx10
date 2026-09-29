@@ -17,11 +17,26 @@ from pathlib import Path
 PATH = Path("/usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/nvidia/sparse_indexer.py")
 
 HELPER_ANCHOR = "@eager_break_during_capture\ndef sparse_attn_indexer_kpool(\n"
-HELPER = '''def _sort_topk_rows(t: torch.Tensor) -> None:
+HELPER = '''from vllm.triton_utils import tl, triton
+
+
+@triton.jit
+def _sort_topk_rows_kernel(ptr, stride, n, BLOCK: tl.constexpr):
+    row = tl.program_id(0)
+    offs = tl.arange(0, BLOCK)
+    pad = 2147483647
+    v = tl.load(ptr + row * stride + offs, mask=offs < n, other=pad)
+    v = tl.sort(tl.where(v < 0, pad, v))
+    tl.store(ptr + row * stride + offs, tl.where(v == pad, -1, v), mask=offs < n)
+
+
+def _sort_topk_rows(t: torch.Tensor) -> None:
     """Order each row's ids ascending in place, keeping the -1 padding last."""
-    pad = torch.iinfo(t.dtype).max
-    v = torch.where(t < 0, pad, t).sort(dim=1).values
-    t.copy_(torch.where(v == pad, -1, v))
+    if t.shape[0] == 0:
+        return
+    _sort_topk_rows_kernel[(t.shape[0],)](
+        t, t.stride(0), t.shape[1], BLOCK=triton.next_power_of_2(t.shape[1])
+    )
 
 
 '''
@@ -57,4 +72,4 @@ else:
     text = text.replace(PREFILL, PREFILL + "            _sort_topk_rows(topk_dst)\n")
     text = text.replace(DECODE, DECODE + "        _sort_topk_rows(topk_dst)\n")
     PATH.write_text(text)
-    print("[sorted-topk] kpool top-k rows sorted in prefill and decode")
+    print("[sorted-topk] kpool top-k rows sorted in prefill and decode (Triton, one launch)")
