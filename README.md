@@ -29,7 +29,7 @@ has the details.
 |---|---|---|---|---|
 | prefill @32k, cold | 4,981 tok/s | 2,929 tok/s | 3,847 tok/s | 4,907 tok/s |
 | prefill @128k, cold | 4,822 tok/s | 2,864 tok/s | 3,648 tok/s | 4,731 tok/s |
-| decode, code / prose / structured | 106.6 / 59.5 / 161.6 tok/s | 60.5 / 36.4 / 89.5 tok/s | 79.8 / 45.2 / 119.8 tok/s | 120.3 / 66.5 / 176.4 tok/s |
+| decode, code / prose / structured | 114.6 / 59.5 / 161.6 tok/s | 60.5 / 36.4 / 89.5 tok/s | 79.8 / 45.2 / 119.8 tok/s | 120.3 / 66.5 / 176.4 tok/s |
 | code, 1 / 2 / 4 / 8 streams, aggregate | 129 / 150 / 201 / 240 tok/s | 74 / 84 / 117 / 130 tok/s | 89 / 107 / 146 / 173 tok/s | 145 / 154 / 219 / 282 tok/s |
 | KV pool (fp8_e4m3) | 4.40M tokens, 26 GiB pin | 1.10M tokens, 8 GiB pin | 1.91M tokens, 12 GiB pin | 4.47M tokens, 26 GiB pin |
 | longest request | 524k tokens | 160k tokens | 524k tokens | 524k tokens |
