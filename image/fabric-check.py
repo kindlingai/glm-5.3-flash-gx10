@@ -9,6 +9,11 @@ later as a slow or subtly different model. The head prints what it found.
 
 Warnings only: it always exits 0, and a rank that finds no peers within
 FABRIC_CHECK_TIMEOUT_S skips the check.
+
+On a ring (FABRIC_LAYOUT=ring) the ranks compare facts through the TCP store
+and skip the all-reduce. This runs before mentat places the ranks in cable
+order, so an NCCL collective here would route to diagonal boxes that share
+no cable, and hang.
 """
 import datetime
 import hashlib
@@ -85,6 +90,7 @@ def main() -> None:
     import torch
     import torch.distributed as dist
 
+    ring = os.environ.get("FABRIC_LAYOUT") == "ring"
     timeout = datetime.timedelta(seconds=TIMEOUT_S)
     try:
         store = dist.TCPStore(os.environ["HEAD_HOST"], PORT, world_size=world, is_master=head, timeout=timeout,
@@ -93,11 +99,21 @@ def main() -> None:
         if rank >= world:
             print(f"fabric check: more than {world} ranks joined; skipped")
             return
-        torch.cuda.set_device(0)
-        dist.init_process_group("nccl", store=store, rank=rank, world_size=world, timeout=timeout,
-                                device_id=torch.device("cuda", 0))
+        if ring:
+            store.set(f"facts{rank}", json.dumps(facts()))
+            everything = [json.loads(store.get(f"facts{r}")) for r in range(world)] if rank == 0 else None
+        else:
+            torch.cuda.set_device(0)
+            dist.init_process_group("nccl", store=store, rank=rank, world_size=world, timeout=timeout,
+                                    device_id=torch.device("cuda", 0))
     except Exception as e:  # noqa: BLE001 -- a missing peer must not stop the boot
         print(f"fabric check: skipped, no rendezvous with all {world} ranks within {TIMEOUT_S}s ({e})")
+        return
+    if ring:
+        if rank == 0:
+            report(world, everything, None)
+        else:
+            print(f"fabric check: rank {rank} took part; the head prints the results")
         return
 
     same, node = facts()
@@ -119,16 +135,24 @@ def main() -> None:
     if rank != 0:
         print(f"fabric check: rank {rank} took part; the head prints the results")
         return
+    report(world, everything, (ms, bus))
 
+
+def report(world: int, everything: list, probe: tuple[float, float] | None) -> None:
+    """The head's table: each rank, the all-reduce timing (None on a ring), and any value that differs."""
     print(f"fabric check ({world} ranks):")
     print("  rank  host          ip               gid  devices")
     for r, (_, n) in enumerate(everything):
         print(f"  {r:<5} {n['host']:<13} {n['ip']:<16} {n['gid']:<4} {n['devices']}")
-    devices = min(int(s["fabric devices"]) for s, _ in everything)
-    expect = GBPS_PER_DEVICE * max(devices, 1)
-    status = "ok  " if bus >= 0.8 * expect else "WARN"
-    print(f"  {status} all-reduce {PROBE_MIB} MiB: {ms:.1f} ms, bus bandwidth {bus:.0f} Gb/s "
-          f"(expected ~{expect:.0f} with {devices} device{'s' if devices != 1 else ''} per node)")
+    if probe is None:
+        print("  ok   all-reduce skipped on a ring: this runs before mentat places the ranks in cable order")
+    else:
+        ms, bus = probe
+        devices = min(int(s["fabric devices"]) for s, _ in everything)
+        expect = GBPS_PER_DEVICE * max(devices, 1)
+        status = "ok  " if bus >= 0.8 * expect else "WARN"
+        print(f"  {status} all-reduce {PROBE_MIB} MiB: {ms:.1f} ms, bus bandwidth {bus:.0f} Gb/s "
+              f"(expected ~{expect:.0f} with {devices} device{'s' if devices != 1 else ''} per node)")
     keys = sorted(set().union(*(s.keys() for s, _ in everything)))
     bad = 0
     for k in keys:

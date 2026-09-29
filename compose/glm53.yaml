@@ -143,6 +143,8 @@ services:
       # 1 lets the stack start without any experimental/ overlay (stock
       # kernels, about half the README's speed); otherwise the entrypoint refuses.
       - ALLOW_STOCK=${ALLOW_STOCK:-}
+      - PREFLIGHT=${PREFLIGHT:-}
+      - FABRIC_CHECK=${FABRIC_CHECK:-}
       # Speculation. SPEC_METHOD is dflash, mtp or none (entrypoint default
       # dflash, k=7); MTP=0 turns it off whichever is named. An MTP drafter
       # costs ~3.4 GiB and a rejection-sampler warmup, which were what killed

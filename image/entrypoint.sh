@@ -697,10 +697,12 @@ fi
 
 # --- fabric check: every rank meets on the head before vLLM ------------------
 # Times an NCCL all-reduce and compares versions, override files and knobs
-# across nodes (fabric-check.py). Warnings only; FABRIC_CHECK=0 skips it.
+# across nodes (fabric-check.py); on a ring it compares only. Warnings only;
+# FABRIC_CHECK=0 skips it, and a check that hangs is stopped.
 if [[ "${FABRIC_CHECK:-1}" == "1" ]]; then
   stage fabric-check
-  python3 /usr/local/bin/fabric-check.py || echo "fabric check: failed to run; continuing"
+  FABRIC_LAYOUT="$FABRIC_LAYOUT" timeout "$(( 3 * ${FABRIC_CHECK_TIMEOUT_S:-120} ))" \
+    python3 /usr/local/bin/fabric-check.py || echo "fabric check: failed or timed out; continuing"
 fi
 
 # --- worker: join and block -------------------------------------------------
