@@ -5,7 +5,8 @@
 # causal_conv1d.py: the KDA short conv writes q, k and v as separate dense
 # tensors, so FlashKDA no longer copies them (~51 ms per 16k-token step).
 # kv_cache_*.py, worker_utils.py, warmup.py: the drafter's KV gets its own
-# small pool instead of a page in every KV block (VLLM_GLM5NEXT_DRAFT_POOL=1).
+# small pool, paged 256 tokens at a time, instead of a page in every KV block
+# (VLLM_GLM5NEXT_DRAFT_POOL=1, VLLM_GLM5NEXT_DRAFT_BLOCK_SIZE).
 services:
   glm53:
     volumes:
@@ -26,3 +27,4 @@ services:
       - VLLM_MHC_FUSED_MAX_TOKENS=${VLLM_MHC_FUSED_MAX_TOKENS:-32}
       - VLLM_TRITON_SPARSE_MLA=${VLLM_TRITON_SPARSE_MLA:-1}
       - VLLM_GLM5NEXT_DRAFT_POOL=${VLLM_GLM5NEXT_DRAFT_POOL:-1}
+      - VLLM_GLM5NEXT_DRAFT_BLOCK_SIZE=${VLLM_GLM5NEXT_DRAFT_BLOCK_SIZE:-}

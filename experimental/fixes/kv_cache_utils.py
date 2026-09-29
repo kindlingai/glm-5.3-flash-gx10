@@ -1323,13 +1323,19 @@ class DraftSlidingWindowSpec(SlidingWindowSpec):
 def _glm5_next_draft_block_size(target_block_size: int) -> int:
     """GLM53-DFLASH2-KV: block size for the drafter's sliding-window group.
 
-    The target block by default. VLLM_GLM5NEXT_DRAFT_BLOCK_SIZE shrinks the
-    draft tensors. It must be a multiple of 64, which every non-MLA backend
+    With its own pool (GLM53-DRAFT-POOL) the drafter pages 256 tokens at a
+    time, so a request holds its 2048-token window rather than two target
+    blocks: at TP=2 the pool fell from 1.12 to 0.24 GiB with decode, streams
+    and greedy output unchanged (2026-09-28). A 576-token page cost 43% of
+    decode (2026-09-03). Otherwise the target block. VLLM_GLM5NEXT_DRAFT_BLOCK_SIZE
+    overrides it. It must be a multiple of 64, which every non-MLA backend
     runs (MultipleOf(16) or 16/32/64), and divide the target block, which
     keeps the scheduler block (lcm over groups) at the target's.
     """
     requested = os.environ.get("VLLM_GLM5NEXT_DRAFT_BLOCK_SIZE")
-    if requested is None:
+    if not requested:
+        if _glm5_next_draft_pool_enabled() and target_block_size % 256 == 0:
+            return 256
         return target_block_size
     block = int(requested)
     if block <= 0 or block % 64 != 0 or target_block_size % block != 0:
