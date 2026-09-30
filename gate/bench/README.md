@@ -61,16 +61,28 @@ Two separate TP=4 boots of one build, compared with `compare`:
 
 | workload | B / A | 95% interval |
 |---|---|---|
-| code | 0.997 | 0.989 to 1.003 |
-| prose | 0.996 | 0.992 to 1.000 |
-| structured | 1.004 | 1.000 to 1.010 |
-| counting | 1.000 | 0.998 to 1.002 |
-| mixed4 | 1.015 | 0.996 to 1.037 |
-| mixed8 | 1.003 | 0.978 to 1.032 |
+| code | 1.004 | 0.996 to 1.015 |
+| prose | 1.004 | 1.001 to 1.007 |
+| structured | 0.998 | 0.993 to 1.001 |
+| counting | 1.003 | 1.000 to 1.009 |
+| mixed4 | 0.976 | 0.951 to 1.000 |
+| mixed8 | 1.001 | 0.968 to 1.036 |
 
-None differ (Holm-corrected p ≥ 0.95). Single-stream code varies 15% from run to run, and
+None differ (Holm-corrected p ≥ 0.20). Single-stream code varies 15% from run to run, and
 pairing still puts two boots within about 1% of each other.
 
 ## Results
 
-RESULTS
+tok/s, with the bootstrap 95% interval. Main at 4e63b64, image v23, boots that restored
+weight snapshots. TP=4 pools two boots (32 runs per workload, 16 batches for mixed).
+TP=3 and TP=2 are one boot each. Every run passed its output checks. TP=6 hasn't been
+measured this way.
+
+| workload | TP=2 | TP=3 | TP=4 |
+|---|---|---|---|
+| code | 66.2 (61.5 to 71.6) | 88.0 (82.9 to 93.9) | 117.3 (111.7 to 123.9) |
+| prose | 42.6 (41.7 to 43.6) | 54.2 (53.3 to 55.1) | 70.5 (69.5 to 71.6) |
+| structured | 94.7 (89.1 to 100.4) | 121.4 (115.2 to 127.8) | 164.3 (158.3 to 170.4) |
+| counting | 97.2 (96.0 to 98.5) | 125.0 (122.8 to 127.2) | 170.5 (168.5 to 172.4) |
+| mixed, 4 streams | 82.6 (79.0 to 86.1) | 106.8 (100.6 to 113.7) | 144.4 (139.3 to 149.7) |
+| mixed, 8 streams | 109.6 (103.0 to 117.6) | 138.0 (129.6 to 146.1) | 194.0 (188.5 to 200.2) |

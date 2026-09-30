@@ -29,26 +29,24 @@ has the details.
 |---|---|---|---|---|
 | prefill @32k, cold | 2,931 tok/s | 3,864 tok/s | 4,934 tok/s | 4,907 tok/s |
 | prefill @128k, cold | 2,871 tok/s | 3,736 tok/s | 4,776 tok/s | 4,731 tok/s |
-| decode, code / prose / structured | 63.1 / 36.6 / 89.1 tok/s | 80.4 / 45.7 / 120.1 tok/s | 109.3 / 60.8 / 159.9 tok/s | 120.3 / 66.5 / 176.4 tok/s |
-| code, 1 / 2 / 4 / 8 streams, aggregate | 73 / 78 / 108 / 138 tok/s | 92 / 107 / 165 / 184 tok/s | 131 / 141 / 209 / 254 tok/s | 145 / 154 / 219 / 282 tok/s |
+| decode\*, code / prose / structured | 66.2 / 42.6 / 94.7 tok/s | 88.0 / 54.2 / 121.4 tok/s | 117.3 / 70.5 / 164.3 tok/s | – |
+| mixed\*, 4 / 8 streams, aggregate | 83 / 110 tok/s | 107 / 138 tok/s | 144 / 194 tok/s | – |
 | KV pool (fp8_e4m3) | 1.10M tokens, 8 GiB pin | 1.91M tokens, 12 GiB pin | 4.40M tokens, 26 GiB pin | 4.47M tokens, 26 GiB pin |
 | longest request | 160k tokens | 524k tokens | 524k tokens | 524k tokens |
 | requests decoding at once | 16 | 64 | 64 | 64 |
 | boot, once snapshots exist | ~3 min | ~3 min | ~3 min | not measured |
 | needle recall | 6/6 up to 128k tokens | 12/12 up to 507k tokens | 12/12 up to 507k tokens | 12/12 up to 480k tokens |
 
-Prefill is cold: random words, nothing cached. Decode is
-[RigMark](https://github.com/alexellis/rigmark)'s single-stream test at
-temperature 0 and reasoning effort low, with every output gate passing. Each
-stream generates 512 tokens from its own code prompt (`gate/conc_workload.py`).
+\* modified rigmark-like approach, see [gate/bench](gate/bench/).
 
-We measured TP=2, 3 and 4 on boots that restored weight snapshots. TP=4 is the
-median of four such boots, because single boots move by a few percent. The
-first boot, which loads the checkpoint and writes the snapshots, leaves less
-memory free and runs slower (128k prefill at TP=2 lost 7-15%), so restart once
-before measuring. TP=6 ran on other boxes and builds, with GPU clocks locked
-at 1989 MHz. [experimental/tp3/README.md](experimental/tp3/README.md) has the
-details.
+Prefill is cold: random words, nothing cached.
+
+We measured TP=2, 3 and 4 on boots that restored weight snapshots. TP=4 prefill
+is the median of four such boots. The first boot, which loads the checkpoint
+and writes the snapshots, leaves less memory free and runs slower (128k prefill
+at TP=2 lost 7-15%), so restart once before measuring. TP=6 ran on other boxes
+and builds, with GPU clocks locked at 1989 MHz.
+[experimental/tp3/README.md](experimental/tp3/README.md) has the details.
 
 TP=4 is the default. For two boxes, set `TP=2` in `compose/.env` on both. Each
 box then holds twice the weights, so the entrypoint shrinks the KV pin, context
