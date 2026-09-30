@@ -32,6 +32,7 @@ Holm-corrected across workloads.
 """
 import argparse, hashlib, json, math, os, random, re, statistics, sys, threading, time, urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # gate/prompts.py
 from prompts import prompt_for
 
 BASE = os.environ.get("GATE_URL", "http://127.0.0.1:8002")
