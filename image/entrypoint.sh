@@ -810,12 +810,16 @@ else
 fi
 
 # --- tool parser --------------------------------------------------------------
-# glm47_failclosed by default: a plugin baked at /usr/local/share, loaded with
-# --tool-parser-plugin. It used to arrive through EXTRA_ARGS from a compose
-# override, and kv-26gib-override.yaml restated EXTRA_ARGS after it -- compose
-# keeps the last value -- so production ran the stock glm47 parser. Selected
-# here, it cannot be dropped by an override. TOOL_PARSER=glm47 is the stock one.
-TOOL_PARSER="${TOOL_PARSER:-glm47_failclosed}"
+# The stock glm47 by default. TOOL_PARSER=glm47_failclosed selects the
+# fail-closed plugin baked at /usr/local/share (loaded with
+# --tool-parser-plugin), a stopgap for tool calls corrupted upstream. It
+# refuses any call to a tool the request did not list, which stalls clients
+# that reach deferred tools through a tool-search step (Qwen Code's MCP
+# tools). The stock parser drops such a call silently: this vLLM fixes
+# validate_tool_names=True in glm47_moe_config, with no flag to turn it off.
+# Selected here, not through EXTRA_ARGS: an override restating EXTRA_ARGS once
+# dropped the plugin from production.
+TOOL_PARSER="${TOOL_PARSER:-glm47}"
 TOOL_ARGS=(--enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER")
 if [[ "$TOOL_PARSER" == "glm47_failclosed" ]]; then
   TOOL_ARGS=(--tool-parser-plugin /usr/local/share/glm47_failclosed.py "${TOOL_ARGS[@]}")

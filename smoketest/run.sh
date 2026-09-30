@@ -62,8 +62,9 @@ t_fact() {
   ok
 }
 
-# The fail-closed parser: a well-formed call to an offered tool must come back
-# parsed. It used to be silently dropped from production by a compose override.
+# The tool parser: a well-formed call to an offered tool must come back parsed.
+# The fail-closed parser (TOOL_PARSER=glm47_failclosed) was once silently
+# dropped from production by a compose override.
 t_tool_call_parsed() {
   post /v1/chat/completions "$(jq -n --arg m "$NAME" '{
     model:$m, max_tokens:1024, temperature:0, tool_choice:"auto",

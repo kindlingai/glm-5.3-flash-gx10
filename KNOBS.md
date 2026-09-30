@@ -73,7 +73,7 @@ Meaning and rationale stay in the entrypoint and compose comments.
 | `STAGE_FILE` | `/tmp/glm53-stage` |
 | `STATUS_PORT` | `8082` |
 | `TILELANG_CACHE_DIR` | `${CACHE_ROOT}/${SHARED_TAG}/tilelang` _(derived)_ |
-| `TOOL_PARSER` | `glm47_failclosed` |
+| `TOOL_PARSER` | `glm47` |
 | `TOPK_BACKEND` | `per_row` |
 | `TORCH_MEM_FRACTION` | `0.92` |
 | `TP` | `4` (or `2`, `3`, `RING4`) |
