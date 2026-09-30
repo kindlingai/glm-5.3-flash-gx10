@@ -149,3 +149,24 @@ changes over main 3df22b8 plus the padded-config import guard (#24):
 
 A 30-minute soak at 64 mixed streams (2700 requests) had no errors,
 preemptions or restarts.
+
+## On cables, with no switch
+
+Three boxes with one cable per pair also form a ring. The entrypoint has no
+mode for it (only `TP=RING4`), so the NCCL ring and each rank's
+`ARX_RING_PREV_HCAS` / `ARX_RING_NEXT_HCAS` are set by hand, with
+`VLLM_ARX_RING=1` and `VLLM_ARXBIG=0`: arx's ring takes three ranks, arxbig's
+does not ([experimental/README.md](../README.md)).
+
+Measured that way on 45b438b with every overlay and RecoverSSM off, from our
+own launcher with the `TP=3` case's arguments
+([#52](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/52)), on our
+own harness, not comparable with the main README's table:
+
+- arx took decode from 116.2 / 88.9 / 47.6 to 128.9 / 94.5 / 49.1 tok/s
+  (count / code / prose) and cold prefill at 21.9k from 2,503 to 2,938 tok/s.
+- With `--max-model-len 1048576` at the 12 GiB pin the KV pool held 1,849,306
+  tokens, and needles at 291,517, 600,405 and 955,301 tokens were found in
+  104, 236 and 422 s.
+- The first boot took 753 s and later boots 184-204 s; `smoketest/run.sh`
+  passed 8/8.
