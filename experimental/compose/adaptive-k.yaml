@@ -4,7 +4,8 @@
 # draft-trunc/: after the drafts exist, each request drops its drafts whose
 # predicted survival (vLLM's acceptance estimator) is below
 # VLLM_DRAFT_TRUNC_TAU. Dead drafts keep the verify shape, skip their MoE
-# experts and are rejected, so outputs are unchanged.
+# experts and are rejected, so outputs are unchanged. Every
+# VLLM_DRAFT_TRUNC_EXPLORE-th step skips the cut and trains the estimator.
 services:
   glm53:
     volumes:

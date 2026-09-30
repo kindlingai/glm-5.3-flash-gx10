@@ -146,9 +146,12 @@ Boot goes from about 8 minutes to about 3.5 once snapshots exist.
   likely token (AUC 0.91-0.93 per position on logged steps). Dead drafts keep
   the verify shape, route to expert -1 (the MoE kernels skip them) and are
   rejected, so greedy output is unchanged, token for token and logprob for
-  logprob. On TP=4: 1-3% faster single-stream decode, and 2-9% more
-  aggregate throughput at 1-8 mixed streams. `VLLM_DRAFT_TRUNC_TAU=0` turns
-  it off.
+  logprob. A cut step grades only the drafts the estimator expected to
+  survive, and fitting on those steps drifted it low over a long mixed
+  workload. So every 4th step (`VLLM_DRAFT_TRUNC_EXPLORE`) skips the cut, and
+  only those steps train the estimator. On TP=4, measured on one boot after
+  the full gate: structured / code / prose decode +2 / +1-2 / +5-7%.
+  `VLLM_DRAFT_TRUNC_TAU=0` turns it off.
 - **recoverssm** (`fixes/recoverssm.py`, `compose/recoverssm.yaml`;
   `VLLM_GLM5NEXT_RECOVERSSM=0` turns it off): the KDA layers keep one recurrent state
   per request instead of one per draft position, and after sampling replay
