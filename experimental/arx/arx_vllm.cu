@@ -320,6 +320,28 @@ struct State {
 State S;
 std::atomic<bool> g_proxy_err{false};
 
+// Idle backoff (#55): keep the exact busy spin while there is work and for ARX_IDLE_SPIN_MS after it (default
+// 200 ms), then nap ARX_IDLE_NAP_US (default 200 us) per loop turn. ARX_IDLE_NAP_US=0 keeps the old spin.
+struct IdleNap {
+  std::chrono::steady_clock::duration spin;
+  std::chrono::microseconds nap;
+  std::chrono::steady_clock::time_point last;
+  IdleNap() {
+    const char* s = std::getenv("ARX_IDLE_SPIN_MS");
+    const char* n = std::getenv("ARX_IDLE_NAP_US");
+    spin = std::chrono::milliseconds(s ? std::atol(s) : 200);
+    nap = std::chrono::microseconds(n ? std::atol(n) : 200);
+    last = std::chrono::steady_clock::now();
+    fprintf(stderr, "arx idle nap: spin %ld ms, nap %ld us%s\n", (long)(s ? std::atol(s) : 200), (long)nap.count(),
+            nap.count() <= 0 ? " (disabled = old spin)" : "");
+  }
+  void busy() { last = std::chrono::steady_clock::now(); }
+  void idle() {
+    if (nap.count() <= 0) return;
+    if (std::chrono::steady_clock::now() - last > spin) std::this_thread::sleep_for(nap);
+  }
+};
+
 int chan_peer(int c) { return S.ring ? (c ? S.next : S.prev) : c; }
 int chan_dev(int c, int r) { return S.ring ? c * 2 + r : r; }         // device here
 int chan_rdev(int c, int r) { return S.ring ? (1 - c) * 2 + r : r; }  // device at the peer
@@ -360,6 +382,7 @@ void proxy_loop() {
   uint64_t relayed[2] = {}, own_bytes[2] = {};
   const bool relay = S.ring && world == 4;
   const volatile uint64_t* flags = S.flag_h;
+  IdleNap nap;
   while (!S.ctl->stop) {
     for (int r = 0; relay && r < 2; ++r)
       while (relayed[r] < seq && flags[S.prev * 2 + r] > relayed[r]) {
@@ -401,8 +424,10 @@ void proxy_loop() {
                         (unsigned long)relayed[1]);
         fprintf(stderr, "%s\n", buf);
       }
+      if (relay && (relayed[0] < seq || relayed[1] < seq)) nap.busy(); else nap.idle();
       continue;
     }
+    nap.busy();
     ++seq;  // every seq, in order
     std::atomic_thread_fence(std::memory_order_acquire);
     const int par = seq & 1;

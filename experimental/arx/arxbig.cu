@@ -57,6 +57,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <thread>
@@ -505,6 +506,37 @@ bool relay_note(Relays& R, const Work& it) {
   return true;
 }
 
+
+// Idle backoff (#55): keep the exact busy spin while there is work and for ARX_IDLE_SPIN_MS after it (default
+// 200 ms), then nap ARX_IDLE_NAP_US (default 200 us) per loop turn. ARX_IDLE_NAP_US=0 keeps the old spin.
+struct IdleNap {
+  std::chrono::steady_clock::duration spin;
+  std::chrono::microseconds nap;
+  std::chrono::steady_clock::time_point last;
+  IdleNap() {
+    const char* s = std::getenv("ARX_IDLE_SPIN_MS");
+    const char* n = std::getenv("ARX_IDLE_NAP_US");
+    spin = std::chrono::milliseconds(s ? std::atol(s) : 200);
+    nap = std::chrono::microseconds(n ? std::atol(n) : 200);
+    last = std::chrono::steady_clock::now();
+    fprintf(stderr, "arx idle nap: spin %ld ms, nap %ld us%s\n", (long)(s ? std::atol(s) : 200), (long)nap.count(),
+            nap.count() <= 0 ? " (disabled = old spin)" : "");
+  }
+  void busy() { last = std::chrono::steady_clock::now(); }
+  void idle() {
+    if (nap.count() <= 0) return;
+    if (std::chrono::steady_clock::now() - last > spin) std::this_thread::sleep_for(nap);
+  }
+};
+
+bool relay_pending(const Relays& R) {  // a relay this rank noted but has not forwarded yet
+  for (int kind = 0; kind < 2; ++kind)
+    for (int o = 0; o < 2; ++o)
+      for (int r = 0; r < 2; ++r)
+        if (R.at[kind][o][r].i < R.nseq[kind]) return true;
+  return false;
+}
+
 // Forwards every piece whose flag has arrived, in order per stream. Out
 // channel 1 carries prev's data on to next (first halves), channel 0 next's
 // on to prev (second halves).
@@ -553,10 +585,13 @@ void proxy_loop() {
   const bool relay = S.ring && world == 4;
   static Relays R;
   auto send = S.ring ? ring_send_chunk : send_piece;
+  IdleNap nap;
   while (!S.ctl->stop) {
+    bool moved = false;
     for (int d = 0; d < S.ndev; ++d) {
       ibv_wc wc[32];
       const int n = ibv_poll_cq(S.cq[d], 32, wc);
+      if (n > 0) moved = true;
       for (int i = 0; i < n; ++i)
         if (wc[i].status != IBV_WC_SUCCESS) {
           fprintf(stderr, "arxbig rank %d: completion error %d\n", rank, wc[i].status);
@@ -566,7 +601,11 @@ void proxy_loop() {
     }
     if (relay && !relay_step(R)) { g_err = true; return; }
     Work& slot = S.ctl->ring[done % kRing];
-    if (slot.tag != done + 1) continue;
+    if (slot.tag != done + 1) {
+      if (moved || (relay && relay_pending(R))) nap.busy(); else nap.idle();
+      continue;
+    }
+    nap.busy();
     std::atomic_thread_fence(std::memory_order_acquire);
     Work it;
     it.op = slot.op; it.seq = slot.seq; it.chunk = slot.chunk; it.slice = slot.slice; it.lo = slot.lo; it.hi = slot.hi;
