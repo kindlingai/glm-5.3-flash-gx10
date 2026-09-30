@@ -1,13 +1,27 @@
 # Adaptive speculation length: the scheduler picks how many of the 7 DFlash2
 # drafts each step verifies (adaptive_k.py). The per-batch-size schedule only
 # makes vLLM capture CUDA graphs for every level; the scheduler ignores it.
+# draft-trunc/: after the drafts exist, each request drops its drafts whose
+# predicted survival (vLLM's acceptance estimator) is below
+# VLLM_DRAFT_TRUNC_TAU. Dead drafts keep the verify shape, skip their MoE
+# experts and are rejected, so outputs are unchanged.
 services:
   glm53:
     volumes:
       - ../experimental/adaptive-k/adaptive_k.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/adaptive_k.py:ro
+      - ../experimental/draft-trunc/draft_trunc.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/spec_decode/draft_trunc.py:ro
+      - ../experimental/draft-trunc/model_runner.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/model_runner.py:ro
+      - ../experimental/draft-trunc/rejection_sampler.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py:ro
+      - ../experimental/draft-trunc/grouped_topk_router.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/router/grouped_topk_router.py:ro
+      - ../experimental/draft-trunc/speculator.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/spec_decode/speculator.py:ro
+      - ../experimental/draft-trunc/dflash2_speculator.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/spec_decode/dflash2/speculator.py:ro
     environment:
       - EXTRA_ARGS=--scheduler-cls vllm.v1.core.sched.adaptive_k.AdaptiveKScheduler --speculative-config {"method":"dflash","model":"/models/glm-5.3-flash-dflash2","num_speculative_tokens":7,"attention_backend":"TRITON_ATTN","num_speculative_tokens_per_batch_size":[[1,1,7],[2,2,5],[3,3,4],[4,4,3],[5,5,2],[6,32,7]]}
       - VLLM_ADAPTIVE_K_CONTROL=/root/.cache/adaptive-k
+      - VLLM_DRAFT_TRUNC_TAU=${VLLM_DRAFT_TRUNC_TAU:-0.3}
+      - VLLM_DRAFT_TRUNC_EXPLORE=${VLLM_DRAFT_TRUNC_EXPLORE:-4}
+      - VLLM_DRAFT_TRUNC_CONTROL=/root/.cache/draft-trunc
+      - VLLM_DRAFT_TRUNC_LOG=${VLLM_DRAFT_TRUNC_LOG:-}
       - VLLM_ADAPTIVE_K_PER_REQUEST=${VLLM_ADAPTIVE_K_PER_REQUEST:-0}
       - VLLM_ADAPTIVE_K_CODE_MODE=${VLLM_ADAPTIVE_K_CODE_MODE:-gated}
       - VLLM_ADAPTIVE_K_ONLINE=${VLLM_ADAPTIVE_K_ONLINE:-1}

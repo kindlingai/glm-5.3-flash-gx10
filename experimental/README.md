@@ -139,6 +139,16 @@ Boot goes from about 8 minutes to about 3.5 once snapshots exist.
   through small ones, and at 16+ streams the scheduler verifies more drafts
   than a fixed table would allow. The drafter uses Triton attention, which
   avoids a mid-step host sync.
+  The scheduler picks the step's draft count before the drafts exist. Once
+  they do, `draft-trunc/` cuts each request's drafts where their predicted
+  survival falls below `VLLM_DRAFT_TRUNC_TAU` (0.3). The prediction is vLLM's
+  acceptance estimator, which scores each draft from the logit of its most
+  likely token (AUC 0.91-0.93 per position on logged steps). Dead drafts keep
+  the verify shape, route to expert -1 (the MoE kernels skip them) and are
+  rejected, so greedy output is unchanged, token for token and logprob for
+  logprob. On TP=4: 1-3% faster single-stream decode, and 2-9% more
+  aggregate throughput at 1-8 mixed streams. `VLLM_DRAFT_TRUNC_TAU=0` turns
+  it off.
 - **recoverssm** (`fixes/recoverssm.py`, `compose/recoverssm.yaml`;
   `VLLM_GLM5NEXT_RECOVERSSM=0` turns it off): the KDA layers keep one recurrent state
   per request instead of one per draft position, and after sampling replay

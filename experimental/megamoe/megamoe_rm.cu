@@ -104,8 +104,11 @@ __global__ void route_prep(const int* __restrict__ topk_ids, int M, int topk, in
   int my_pos[4];
   // A pair's slot is its rank among earlier pairs with the same expert, so
   // every block that rebuilds this table agrees on it.
+  // A pair with expert id -1 is skipped: no entry, so no weight reads, and
+  // combine leaves it out.
   for (int i = tid, n = 0; i < pairs; i += nt, ++n) {
     const int e = topk_ids[i];
+    if (e < 0) continue;
     int r = 0;
     for (int j = 0; j < i; ++j) r += topk_ids[j] == e;
     my_pos[n] = r;
@@ -146,6 +149,7 @@ __global__ void route_prep(const int* __restrict__ topk_ids, int M, int topk, in
   __syncthreads();
   for (int i = tid, n = 0; i < pairs; i += nt, ++n) {
     const int e = topk_ids[i], p = my_pos[n];
+    if (e < 0) continue;
     entry_tk[(base[e] + p / kSlots) * kSlots + p % kSlots] = i;  // i = token*topk + k
   }
 }
@@ -312,14 +316,15 @@ __global__ void __launch_bounds__(WARPS * 32) fc2_rm(
   }
 }
 
-// out[m] = sum over k of ypart[m, k], in k order.
-__global__ void combine(const float* __restrict__ ypart, int topk, int Hout,
-                        __nv_bfloat16* __restrict__ out) {
+// out[m] = sum over k of ypart[m, k], in k order, over the pairs with an expert.
+__global__ void combine(const float* __restrict__ ypart, const int* __restrict__ topk_ids, int topk,
+                        int Hout, __nv_bfloat16* __restrict__ out) {
   const int m = blockIdx.y;
   const int f = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
   if (f >= Hout) return;
   float4 acc = make_float4(0.f, 0.f, 0.f, 0.f);
   for (int k = 0; k < topk; ++k) {
+    if (topk_ids[m * topk + k] < 0) continue;
     const float4 v = *reinterpret_cast<const float4*>(ypart + ((size_t)m * topk + k) * Hout + f);
     acc.x += v.x; acc.y += v.y; acc.z += v.z; acc.w += v.w;
   }
@@ -383,7 +388,8 @@ void megamoe_rm_forward(torch::Tensor x, torch::Tensor topk_ids, torch::Tensor t
     default: fc2(integral_constant<int, 1>{}); break;
   }
   combine<<<dim3((Hout / 4 + 127) / 128, M), 128, 0, stream>>>(
-      ypart.data_ptr<float>(), topk, Hout, reinterpret_cast<__nv_bfloat16*>(out.data_ptr()));
+      ypart.data_ptr<float>(), topk_ids.data_ptr<int>(), topk, Hout,
+      reinterpret_cast<__nv_bfloat16*>(out.data_ptr()));
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("forward", &megamoe_rm_forward); }
