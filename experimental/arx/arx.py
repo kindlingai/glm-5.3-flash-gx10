@@ -9,13 +9,18 @@ Enabled with VLLM_ARX_ALLREDUCE=1. The RDMA devices and GID index come from
 NCCL_IB_HCA (exactly two, one per root, in the same subnet order on every
 rank) and NCCL_IB_GID_INDEX.
 
-Ring mode (VLLM_ARX_RING=1) is for groups of 4 or 2 cabled in a ring with no
-switch, with rank r's "next" port cabled to rank r+1. arx and arxbig open QPs
-only to r-1 and r+1, and the rank in between relays raw data for the rank
-beyond, so results match mesh mode bit for bit (see the .cu files).
-ARX_RING_PREV_HCAS and ARX_RING_NEXT_HCAS name the two RDMA devices (root 0,
-root 1) of the port facing each neighbour. Each port has its own subnet, so
-each device uses the RoCE v2 GID of the IPv4 address on its own netdev.
+Ring mode (VLLM_ARX_RING=1) is for groups of 2, 3 or 4 cabled in a ring with
+no switch, with rank r's "next" port cabled to rank r+1. arx and arxbig open
+QPs only to r-1 and r+1, and at 4 the rank in between relays raw data for the
+rank beyond, so results match mesh mode bit for bit (see the .cu files). At 3
+both other ranks are neighbours and nothing is relayed. arxbig's ring
+reduce-scatter needs 2 or 4 ranks, so a ring of 3 runs arx alone
+(VLLM_ARXBIG=0). ARX_RING_PREV_HCAS and ARX_RING_NEXT_HCAS name the two RDMA
+devices of the port facing each neighbour, in the order whose root r shares a
+subnet with root r at that neighbour: root 0 then root 1 when every box is
+cabled the same way, the other order on a box whose cabling is mirrored. Each
+port has its own subnet, so each device uses the RoCE v2 GID of the IPv4
+address on its own netdev.
 """
 import os
 
@@ -73,8 +78,8 @@ def fabric(world: int, who: str):
             logger.warning("%s ring mode needs two devices each in ARX_RING_PREV_HCAS and ARX_RING_NEXT_HCAS, "
                            "got %r and %r; using NCCL", who, prev, nxt)
             return None
-        if world not in (2, 4):
-            raise ValueError(f"{who} ring mode supports groups of 2 or 4 ranks, not {world}")
+        if world not in (2, 3, 4):
+            raise ValueError(f"{who} ring mode supports groups of 2 to 4 ranks, not {world}")
         devs = prev + nxt
         return devs, [roce_v2_gid(d) for d in devs], True
     hcas = _hcas("NCCL_IB_HCA")

@@ -23,8 +23,8 @@ Leave a compose file out to drop that piece, or set its switch in `.env` (every 
 | `VLLM_ARXBIG` | 1 | arxbig RDMA collectives for prefill (arx.yaml) |
 | `VLLM_ARXBIG_AG` | 0 | route prefill all-gathers through arxbig; off because its output sits in pinned memory, where GEMMs reading it run 3.7x slower |
 | `VLLM_ARXBIG_RS` | 1 | RDMA reduce-scatter buffers (~0.5 GB pinned per rank); needed by `VLLM_GLM_SP_MOE_FUSED` |
-| `VLLM_ARX_RING` | 0 (1 with `TP=RING4`) | for boxes cabled in a ring with no switch: arx and arxbig open QPs only to rank r-1 and r+1, and the rank between two others relays their data, with the same results as over the switch |
-| `ARX_RING_PREV_HCAS` | from mentat with `TP=RING4` | with `VLLM_ARX_RING=1`: the RDMA devices, root 0 then root 1, of the port cabled to rank r-1. Each device uses the GID of its own IPv4 address |
+| `VLLM_ARX_RING` | 0 (1 with `TP=RING4`) | for boxes cabled in a ring with no switch: arx and arxbig open QPs only to rank r-1 and r+1, and at four ranks the rank between two others relays their data, with the same results as over the switch. arx takes rings of 2, 3 or 4; arxbig takes 2 or 4, so a ring of 3 needs `VLLM_ARXBIG=0` |
+| `ARX_RING_PREV_HCAS` | from mentat with `TP=RING4` | with `VLLM_ARX_RING=1`: the two RDMA devices of the port cabled to rank r-1. Each device uses the GID of its own IPv4 address. Device r must share its subnet with device r of the neighbour's list for that cable: root 0 then root 1 when every box is cabled the same way, root 1 first on a box whose cabling is mirrored |
 | `ARX_RING_NEXT_HCAS` | unset | the same for the port cabled to rank r+1 |
 | `VLLM_GLM_SP_TP` | 1 | sequence parallelism for forwards of `VLLM_GLM_SP_MIN_TOKENS` (1024) or more (sp.yaml) |
 | `VLLM_GLM_SP_FP8_GATHER` | 1 | gather KDA attention inputs as FP8 |
@@ -220,6 +220,20 @@ Boot goes from about 8 minutes to about 3.5 once snapshots exist.
   subnet for each PCIe root. On a switch, with both neighbours on the one
   port, `arx/test_ring.py` passed bit for bit, decode was ~1% slower from the
   relay and prefill 3-4% slower (2026-09-28). Not yet measured on cables.
+  Three boxes, one cable per pair, also form a ring, and there both other
+  ranks are neighbours, so arx sends every partial direct and relays nothing.
+  arx's ring mode takes 3 ranks; arxbig's does not, because its ring
+  reduce-scatter splits the rank two away across both neighbours, so a ring
+  of 3 runs with `VLLM_ARXBIG=0`. The entrypoint has no three-box ring mode
+  (only `TP=RING4`), so the NCCL ring and `ARX_RING_*_HCAS` are set by hand.
+  `fabric_ring.py` lists each port's devices in PCI order, root 0 first,
+  which fits boxes that are all cabled the same way; on a box cabled
+  mirrored, root 0 of a port faces the neighbour's root 1, and its lists
+  must put root 1 first. On cables, `arx/test_ring.py --mode ring` at
+  `WORLD_SIZE=3`, cut down to the arx all-reduce checks, the all-reduce
+  burst and the latency bench, passed 85 checks per rank with
+  12.2 / 19.7 / 42.8 / 69.1 us at 8 / 64 / 256 / 512 KB
+  ([#52](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/52)).
 - **arx prefetch** (`VLLM_GLM_ARX_PREFETCH`): while a decode all-reduce waits
   for its peers, its threads ask L2 for the weights the next kernels read (the
   router gate and shared expert after attention, the next in_proj after the

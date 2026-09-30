@@ -625,7 +625,8 @@ py::bytes prepare(int64_t rank, int64_t world, std::vector<std::string> devs, st
                   int64_t slot_bytes, int64_t rs_slot_bytes) {
   TORCH_CHECK(S.rank < 0 && world >= 2 && world <= kMaxWorld && slot_bytes % (world * 16) == 0);
   TORCH_CHECK(rs_slot_bytes == 0 || rs_slot_bytes == slot_bytes, "arxbig: reduce_scatter uses the same slot size");
-  TORCH_CHECK(!ring || world == 2 || world == 4, "arxbig ring mode supports world 2 or 4, not ", world);
+  TORCH_CHECK(!ring || world == 2 || world == 4, "arxbig ring mode supports world 2 or 4, not ", world,
+              ": the ring reduce-scatter sends the rank two away half each way. Set VLLM_ARXBIG=0 to run arx alone");
   S.ndev = ring ? 4 : 2;
   TORCH_CHECK((int)devs.size() == S.ndev && (int)gids.size() == S.ndev, "arxbig: expected ", S.ndev, " devices");
   S.rank = rank; S.world = world; S.ring = ring; S.slot_bytes = slot_bytes; S.rs_slot_bytes = rs_slot_bytes;

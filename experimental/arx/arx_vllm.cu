@@ -23,10 +23,12 @@
 // Ring mode is for boxes cabled in a ring with no switch. The ConnectX cannot
 // forward RoCE for other boxes, so QPs go only to prev = r-1 and next = r+1,
 // each over the two functions of the port facing that neighbour. A rank sends
-// its partial to next, and at world 4 to prev as well. The proxy forwards the
-// partial from prev on to next. The relayed data lands in the same
-// recv[seq & 1][src] and flag[src * 2 + root] as a direct write, so the GPU
-// side is unchanged. World 2 sends to next only.
+// its partial to next, and at world 3 and 4 to prev as well. At world 4 the
+// proxy forwards the partial from prev on to next. The relayed data lands in
+// the same recv[seq & 1][src] and flag[src * 2 + root] as a direct write, so
+// the GPU side is unchanged. At world 3 prev and next are the two other ranks,
+// so every partial goes direct and nothing is relayed. World 2 sends to next
+// only.
 //
 // The relay adds one reuse hazard. Rank m reads recv[par][m-1] to forward it
 // to m+1, and m-1 writes seq + 2 there next. m-1 publishes seq + 2 after
@@ -448,7 +450,7 @@ py::bytes arx_prepare(int64_t rank, int64_t world, std::vector<std::string> devs
                       bool ring) {
   TORCH_CHECK(S.rank < 0, "arx is already prepared in this process");
   TORCH_CHECK(world >= 2 && world <= kMaxWorld);
-  TORCH_CHECK(!ring || world == 2 || world == 4, "arx ring mode supports world 2 or 4, not ", world);
+  TORCH_CHECK(!ring || (world >= 2 && world <= 4), "arx ring mode supports world 2 to 4, not ", world);
   S.ndev = ring ? 4 : 2;
   TORCH_CHECK((int)devs.size() == S.ndev && (int)gids.size() == S.ndev, "arx: expected ", S.ndev, " devices");
   S.rank = rank; S.world = world; S.ring = ring;

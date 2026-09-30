@@ -35,9 +35,11 @@ and for ring, the two functions of the port facing each neighbour, e.g.
     -e ARX_RING_PREV_HCAS=rocep1s0f0,roceP2p1s0f0 -e ARX_RING_NEXT_HCAS=rocep1s0f1,roceP2p1s0f1
 
 The /tmp/arx-ext mount keeps the compiled extensions between runs.
-WORLD_SIZE=2 works the same way. Every rank prints its failures and rank 0
-ends with "RESULT <mode>: PASS" or "FAIL"; the exit code is nonzero on a
-failure. A rank that makes no progress for 120 s says where it was and exits.
+WORLD_SIZE=2 works the same way. At WORLD_SIZE=3 ring mode is arx only:
+arxbig refuses a ring of 3, so this script stops at its setup. Every rank
+prints its failures and rank 0 ends with "RESULT <mode>: PASS" or "FAIL";
+the exit code is nonzero on a failure. A rank that makes no progress for
+120 s says where it was and exits.
 """
 import argparse
 import hashlib
