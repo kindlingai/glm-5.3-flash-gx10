@@ -44,7 +44,7 @@ Leave a compose file out to drop that piece, or set its switch in `.env` (every 
 | `VLLM_MOE_PREFILL_Y8` | 1 | FP8 per-expert rows in the fused prefill MoE |
 | `VLLM_TRITON_SPARSE_MLA` | 1 | Triton sparse MLA instead of FlashInfer's (fixes.yaml) |
 | `MAX_NUM_SEQS` | 50 | requests decoding at once (fixes.yaml); about 50 KDA states fit in the pinned KV pool, against the stock 32 |
-| `VLLM_GLM5NEXT_RECOVERSSM` | 0 | 1 turns it on (see below: off while a state-loss bug is open). With recoverssm.yaml: KDA drafts verified from one saved state per request, bit-exact; raises `MAX_NUM_SEQS` to 64 at TP=4 and 16 at TP=2 |
+| `VLLM_GLM5NEXT_RECOVERSSM` | 1 | with recoverssm.yaml: KDA drafts verified from one saved state per request, bit-exact; raises `MAX_NUM_SEQS` to 64 at TP=4 and 16 at TP=2 |
 | `VLLM_GLM5NEXT_DRAFT_POOL` | 1 | the drafter's KV in its own small pool instead of a page in every KV block: ~40% more KV tokens (fixes.yaml) |
 | `VLLM_DENSE_W4` | in_proj, o_proj, shared experts, drafter | regex of dense layers stored as NVFP4 (the rest are FP8); add `\|lm_head$` for the opt-in NVFP4 lm_head |
 | `VLLM_DENSE_FP8_LM_HEAD` | 1 | FP8 lm_head |
@@ -140,16 +140,12 @@ Boot goes from about 8 minutes to about 3.5 once snapshots exist.
   than a fixed table would allow. The drafter uses Triton attention, which
   avoids a mid-step host sync.
 - **recoverssm** (`fixes/recoverssm.py`, `compose/recoverssm.yaml`;
-  `VLLM_GLM5NEXT_RECOVERSSM=1` turns it on): the KDA layers keep one recurrent state
+  `VLLM_GLM5NEXT_RECOVERSSM=0` turns it off): the KDA layers keep one recurrent state
   per request instead of one per draft position, and after sampling replay
   the accepted tokens through the stock kernel, so outputs are bit-identical.
   Ported from vLLM's Kimi-K3 RecoverSSM. At TP=2, 16 requests run at once
   instead of 3, and 8 streams decode 44% faster. At TP=4, 61 run at 64
-  streams instead of 49 (+28% aggregate). Off by default for now: when a
-  verify step's accepted tokens end exactly on a KDA block boundary, the commit
-  stores the request's state in a block that align mode has not allocated yet,
-  so the state is lost and the rest of that reply turns to noise. Long replies
-  cross a boundary every 2,304 tokens at TP=4, so long agent threads hit it.
+  streams instead of 49 (+28% aggregate).
 - **fixes** (`fixes/`): things found by profiling.
   - FlashInfer's MLA planner cloned a 136 MB metadata buffer on every step,
     only to roll it back on error.

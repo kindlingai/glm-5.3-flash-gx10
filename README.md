@@ -10,8 +10,7 @@ with a few small patches, a newer FlashKDA, and
 - DFlash2 speculative decoding, with a scheduler that picks the draft length
   each step from a live model of step cost and acceptance.
 - RecoverSSM: drafts are verified from one saved KDA state per request, so
-  more requests fit in the KV pool. Off for now: it can lose a request's KDA
-  state at a block boundary and turn the rest of a long reply to noise.
+  more requests fit in the KV pool.
 - NVFP4 MoE kernels for GB10: a decode kernel that keeps activations in 16
   bits, and a fused prefill kernel.
 - A Triton sparse MLA kernel in place of FlashInfer's.

@@ -79,7 +79,7 @@ Meaning and rationale stay in the entrypoint and compose comments.
 | `TP` | `4` (or `2`, `3`, `RING4`) |
 | `TRITON_CACHE_DIR` | `${CACHE_ROOT}/${SHARED_TAG}/triton` _(derived)_ |
 | `VLLM_ENGINE_READY_TIMEOUT_S` | `3600` |
-| `VLLM_GLM5NEXT_RECOVERSSM` | `0` |
+| `VLLM_GLM5NEXT_RECOVERSSM` | `0` (1 with recoverssm.yaml) |
 | `VLLM_HOST_IP` | the `lan`-tagged address from mentatd, else its `node_ip` _(derived)_ |
 | `VLLM_WEIGHT_SNAPSHOT_DIR` | _(empty)_ |
 | `WORKER_WAIT_S` | `0` |
