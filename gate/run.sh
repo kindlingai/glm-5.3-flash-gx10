@@ -15,6 +15,9 @@ export GATE_URL=${GATE_URL:-http://127.0.0.1:8002} GATE_MODEL=${GATE_MODEL:-glm5
 export QUALITY_URL=$GATE_URL QUALITY_DIR=${QUALITY_DIR:-quality-data}
 IMAGE=${GATE_IMAGE:-spark-glm53:v8}
 full() { [ "$MODE" = full ]; }
+# The HumanEval programs run in a container; without docker access this fell
+# through to "permission denied" and HumanEval went unscored.
+DOCKER=docker; docker info >/dev/null 2>&1 || DOCKER="sudo docker"
 
 echo "--- smoketest"
 bash smoketest/run.sh "$GATE_URL" 2>&1 | tail -1
@@ -23,7 +26,7 @@ python3 gate/nll.py compare | cut -c1-100
 echo "--- GSM8K$(full && echo ' and HumanEval')"
 python3 experimental/quality/quality.py "$LABEL" 250 2>&1 | grep -E "GSM8K|Error"
 if full; then
-  docker run --rm --network none -v "$(realpath "$QUALITY_DIR/$LABEL")":/q:ro \
+  $DOCKER run --rm --network none -v "$(realpath "$QUALITY_DIR/$LABEL")":/q:ro \
     -v "$PWD/experimental/quality/run_he.py":/run_he.py:ro --entrypoint python3 "$IMAGE" /run_he.py /q 2>&1 | tail -1
   echo "--- count to 200"
   python3 gate/count.py 5 | tail -1
