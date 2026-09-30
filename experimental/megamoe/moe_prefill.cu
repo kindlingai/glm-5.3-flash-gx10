@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Prefill MoE for GB10 (sm_121a): NVFP4 x NVFP4 grouped GEMMs on the tensors
 // vLLM hands FlashInfer's CUTLASS MoE.
 //   fc1: gathers token rows by index, SwiGLU and NVFP4 requantization in the

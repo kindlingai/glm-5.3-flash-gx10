@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // megamoe on CUTLASS's own NVFP4 MoE layout (the tensors vLLM's FlashInfer
 // CUTLASS backend keeps after processing), so decode and prefill share one copy
 // of the weights: this kernel for decode-sized batches, CUTLASS for prefill.

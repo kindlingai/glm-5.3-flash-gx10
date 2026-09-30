@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // megadense4: W4A16 dense GEMM for decode-sized batches on GB10 (sm_121a),
 // y[m][n] = gscale * sum_k x[m][k] w[n][k], M <= 64, and the dequantization
 // that larger batches use to hand the weight to cuBLAS.
