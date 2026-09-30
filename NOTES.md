@@ -230,11 +230,21 @@ So the second root is worth 11% of prefill, not 40%. Collectives are a
 minority of prefill time, which is why doubling their bandwidth moves it this
 little.
 
+`NCCL_MAX_NCHANNELS=8` was chosen on 2026-09-06 while the fabric ran at 12
+Gb/s. Remeasured on the healthy fabric (2026-09-29, first-touch prefill, two
+alternating passes of three warmed runs):
+
+| channel cap | 32k | 128k |
+|---|---|---|
+| 8 (the entrypoint default) | 4,905 tok/s | 4,701 |
+| 32 (NCCL's own choice) | 4,769 | 4,595 |
+
+So 8 stays. Forcing `NCCL_PROTO=Simple` was also 0.5-1.5% slower: NCCL picks
+LL even for 50 MB messages here, but prefill's NCCL time is ranks waiting for
+the slowest one, not the protocol.
+
 ## Not yet measured
 
-- `NCCL_MAX_NCHANNELS=8` was chosen on 2026-09-06 while the fabric ran at
-  12 Gb/s, before a power drain fixed it. On the healthy fabric 16 channels
-  measured slower than 8 (above); NCCL's own choice, with no cap, is untested.
 - Why production moved from marlin to `flashinfer_cutlass` on 2026-09-21 is not
   recorded. It passes the thinking-on corruption probe; the greedy
   determinism repros in `dev/repro/` were measured on marlin.
