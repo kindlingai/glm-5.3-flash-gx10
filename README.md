@@ -539,7 +539,9 @@ tool parser idea) ·
 [Chuck](https://github.com/chuck-ads) (the RDMA path MTU, [#6](https://github.com/mmastrac/glm-5.3-flash-4x-gx10/pull/6), and the
 streamed tool call and page cache reports, [#7](https://github.com/mmastrac/glm-5.3-flash-4x-gx10/issues/7)) ·
 [ayayalar](https://github.com/ayayalar) (the first-boot stall report behind the
-fabric check, [#5](https://github.com/mmastrac/glm-5.3-flash-4x-gx10/issues/5))
+fabric check, [#5](https://github.com/mmastrac/glm-5.3-flash-4x-gx10/issues/5)) ·
+[stevededrick](https://github.com/stevededrick) (the arx idle backoff,
+[#59](https://github.com/kindlingai/glm-5.3-flash-gx10/pull/59))
 
 The files in `experimental/` that replace vLLM and FlashInfer files keep their
 Apache-2.0 headers, and [experimental/README.md](experimental/README.md#sources)
