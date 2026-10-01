@@ -91,6 +91,10 @@ def prefill_routed(m, x, topk_weights, topk_ids, y8: bool = False, x4=None):
     w13, w2 = m.w13_weight, m.w2_weight
     E, H, I = w13.shape[0], w2.shape[1], w13.shape[1] // 2
     M, topk = topk_ids.shape
+    # A row with no routed experts carries id -1 (weight 0). Every expert id is used as an
+    # index below (scatter_add_, argsort/searchsorted, the fc1 gather), so point it at expert 0;
+    # its weight is 0, so finalize adds nothing for it, the same as CUTLASS skipping it.
+    topk_ids = topk_ids.masked_fill(topk_ids < 0, 0)
     from vllm import _custom_ops as ops
 
     if x4 is None:
@@ -154,6 +158,13 @@ def _buffers(M: int, topk: int, H: int, I: int, device) -> dict:
 def _apply(self, layer, x, topk_weights, topk_ids, shared_experts, shared_experts_input):
     global _check_left
     M = x.shape[0]
+    # Rows with no routed experts arrive as id -1 / weight 0 (seen in batches that mix a long
+    # prefill chunk with concurrent decode rows). CUTLASS skips them; megamoe and moe_prefill
+    # index by id, so send them to expert 0 at weight 0, which adds exactly nothing.
+    # Elementwise, no host sync.
+    neg = topk_ids < 0
+    topk_ids = topk_ids.masked_fill(neg, 0)
+    topk_weights = topk_weights.masked_fill(neg, 0)
     if (_PREFILL and M >= _PREFILL_MIN and x.dtype == torch.bfloat16 and hasattr(layer, "_moe_prefill_experts")
             and not torch.cuda.is_current_stream_capturing()):
         out = _prefill(layer, x.contiguous(), topk_weights, topk_ids)
