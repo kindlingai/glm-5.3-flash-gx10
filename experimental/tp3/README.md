@@ -158,10 +158,15 @@ mode for it (only `TP=RING4`), so the NCCL ring and each rank's
 `VLLM_ARX_RING=1` and `VLLM_ARXBIG=0`: arx's ring takes three ranks, arxbig's
 does not ([experimental/README.md](../README.md)).
 
-Measured that way on 45b438b with every overlay and RecoverSSM off, from our
-own launcher with the `TP=3` case's arguments
-([#52](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/52)), on our
-own harness, not comparable with the main README's table:
+Through a switch, with both neighbours on one port, ring and mesh at three
+ranks gave the same bits and the same all-reduce latency: 14.5 / 21.5 / 45.7 /
+72.9 us in ring mode against 13.6 / 24.2 / 44.9 / 72.6 in mesh mode, at
+8 / 64 / 256 / 512 KB.
+
+@calvarado2004 measured a cabled triangle on 45b438b, with every overlay and
+RecoverSSM off, from their own launcher with the `TP=3` case's arguments and on
+their own harness, so these aren't comparable with the main README's table
+([#52](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/52)):
 
 - arx took decode from 116.2 / 88.9 / 47.6 to 128.9 / 94.5 / 49.1 tok/s
   (count / code / prose) and cold prefill at 21.9k from 2,503 to 2,938 tok/s.
