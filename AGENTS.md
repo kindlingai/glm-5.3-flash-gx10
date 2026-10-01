@@ -111,6 +111,40 @@ The last full gate (2026-09-28):
 
 When your PR lands with better numbers, update this table in the same PR.
 
+## kindling.json
+
+`kindling.json` at the repo root is the README's results table in a form a
+program can read. The Kindling AI site reads it from `main`, so whatever is
+merged there is what people see.
+
+Keep it in step with the README:
+
+- When a PR changes the README results table, change `kindling.json` in the
+  same PR. Same numbers, same rounding. A PR that changes one and not the
+  other isn't done.
+- It mirrors the README table, not the last-full-gate table above. The gate
+  table moves with every PR; the README is what we publish.
+- One entry in `configs` per TP column. Leave out a number that wasn't
+  measured. Don't write 0, and don't fill a gap with an estimate.
+- Check it parses before you push: `python3 -m json.tool kindling.json`.
+
+The fields:
+
+| field | what |
+|---|---|
+| `title`, `variant`, `summary` | the card heading, the quant tag, one or two sentences |
+| `model`, `hardware`, `stack` | the checkpoint, the boxes, a few short tags |
+| `default_config` | the `id` of the config shown first |
+| `configs[].id`, `label`, `nodes` | e.g. `tp4`, `TP=4`, `4` |
+| `configs[].decode` | single-stream decode tok/s by workload: `code`, `prose`, `structured` |
+| `configs[].prefill` | cold prefill, `[{ "context": tokens, "tps": tok/s }]` |
+| `configs[].concurrency` | aggregate tok/s, `[{ "streams": n, "aggregate_tps": tok/s }]` |
+| `configs[].max_context`, `kv_pool_tokens`, `max_concurrent` | integers: tokens, tokens, requests |
+| `configs[].quality` | `[{ "name": ..., "value": ... }]`, shown as short text |
+| `configs[].notes` | one line of caveats |
+
+Context lengths are in tokens: 32k is `32768`, 128k is `131072`.
+
 ## Extra checks for some changes
 
 The gate covers the common cases. Some changes need more.

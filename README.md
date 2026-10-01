@@ -71,6 +71,10 @@ structured, level on prose, and about 5% below our RigMark prefill.
 [NOTES.md](NOTES.md) has the measurements and diagnosis behind the choices
 here.
 
+[kindling.json](kindling.json) has the results table above in a form a program
+can read. The Kindling AI site shows this recipe's numbers from it. A PR that
+changes the table changes kindling.json too.
+
 ## What you need
 
 - **Four ASUS GX10 or other GB10 boxes** (sm_121a, 128 GB unified memory), or
@@ -133,6 +137,7 @@ that holds cluster membership.
 | `image/` | Dockerfile, entrypoint, patches, `verify-base.py`, `self-test.py`, chat template, `build.sh` |
 | `compose/glm53.yaml` | the model, the same file on every box |
 | `.env.example` | optional overrides for `compose/.env` |
+| `kindling.json` | the results table, machine-readable, for the Kindling AI site |
 | `smoketest/` | `run.sh <base> [served-name]` |
 | `.submodules/spark-agent` | the status server, reached through the `vllm` symlink |
 | `dev/` | not in the image: the corruption diagnosis and repros, kernel and patch tests, the step tap |

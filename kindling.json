@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "title": "GLM-5.3-Flash",
+  "variant": "NVFP4",
+  "summary": "nvidia/GLM-5.3-Flash-NVFP4 on vLLM with mentat in place of Ray, over RoCE. DFlash2 speculative decoding, GB10 NVFP4 MoE kernels, RDMA collectives and processed-weight snapshots for ~3 minute restarts.",
+  "model": "nvidia/GLM-5.3-Flash-NVFP4",
+  "hardware": "ASUS GX10 (GB10)",
+  "stack": ["vLLM", "mentat", "DFlash2", "RoCE"],
+  "default_config": "tp4",
+  "configs": [
+    {
+      "id": "tp2",
+      "label": "TP=2",
+      "nodes": 2,
+      "decode": { "code": 66.2, "prose": 42.6, "structured": 94.7 },
+      "prefill": [ { "context": 32768, "tps": 2931 }, { "context": 131072, "tps": 2871 } ],
+      "concurrency": [ { "streams": 4, "aggregate_tps": 83 }, { "streams": 8, "aggregate_tps": 110 } ],
+      "max_context": 160000,
+      "kv_pool_tokens": 1100000,
+      "max_concurrent": 16,
+      "quality": [ { "name": "Needle recall", "value": "6/6 up to 128k" } ]
+    },
+    {
+      "id": "tp3",
+      "label": "TP=3",
+      "nodes": 3,
+      "decode": { "code": 88.0, "prose": 54.2, "structured": 121.4 },
+      "prefill": [ { "context": 32768, "tps": 3864 }, { "context": 131072, "tps": 3736 } ],
+      "concurrency": [ { "streams": 4, "aggregate_tps": 107 }, { "streams": 8, "aggregate_tps": 138 } ],
+      "max_context": 524288,
+      "kv_pool_tokens": 1910000,
+      "max_concurrent": 64,
+      "quality": [ { "name": "Needle recall", "value": "12/12 up to 507k" } ]
+    },
+    {
+      "id": "tp4",
+      "label": "TP=4",
+      "nodes": 4,
+      "decode": { "code": 117.3, "prose": 70.5, "structured": 164.3 },
+      "prefill": [ { "context": 32768, "tps": 4934 }, { "context": 131072, "tps": 4776 } ],
+      "concurrency": [ { "streams": 4, "aggregate_tps": 144 }, { "streams": 8, "aggregate_tps": 194 } ],
+      "max_context": 524288,
+      "kv_pool_tokens": 4400000,
+      "max_concurrent": 64,
+      "quality": [ { "name": "Needle recall", "value": "12/12 up to 507k" } ]
+    },
+    {
+      "id": "tp6",
+      "label": "TP=6",
+      "nodes": 6,
+      "prefill": [ { "context": 32768, "tps": 4907 }, { "context": 131072, "tps": 4731 } ],
+      "max_context": 524288,
+      "kv_pool_tokens": 4470000,
+      "max_concurrent": 64,
+      "quality": [ { "name": "Needle recall", "value": "12/12 up to 480k" } ],
+      "notes": "Decode not measured at TP=6. Ran on other boxes and builds, with GPU clocks locked at 1989 MHz."
+    }
+  ]
+}
