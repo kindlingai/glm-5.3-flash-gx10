@@ -21,10 +21,10 @@ d1, d2 = sys.argv[4], sys.argv[5]; sys.exit(0 if eval(sys.argv[3]) else 1)' "$ou
 }
 ref='{"method": "dflash", "disable_eagle_block_drop": True, "model": d1, "num_speculative_tokens": 7, "attention_backend": "TRITON_ATTN", "num_speculative_tokens_per_batch_size": [[1,1,7],[2,2,5],[3,3,4],[4,4,3],[5,5,2],[6,32,7]]}'
 check "default stack = the old overlay's config" "rc == 0 and c == $ref" SPEC_METHOD=dflash DFLASH_MODEL="$d1" SPEC_EXTRA="$extra"
-old='{"method": "dflash", "model": d1, "num_speculative_tokens": 7, "attention_backend": "TRITON_ATTN", "num_speculative_tokens_per_batch_size": [[1,1,7],[2,2,5],[3,3,4],[4,4,3],[5,5,2],[6,32,7]]}'
-for f in tp3 tp6; do  # these restate EXTRA_ARGS and SPEC_EXTRA after adaptive-k.yaml; same config as before, no block-drop key
-  check "$f.yaml = its old config" "rc == 0 and c == $old" SPEC_METHOD=dflash DFLASH_MODEL="$d1" \
-    SPEC_EXTRA="$(sed -n 's/^ *- SPEC_EXTRA=//p' experimental/compose/$f.yaml)" EXTRA_ARGS="$(sed -n 's/^ *- EXTRA_ARGS=//p' experimental/compose/$f.yaml)"
+for f in tp3 tp6; do  # these restate EXTRA_ARGS after adaptive-k.yaml and keep its SPEC_EXTRA (#66)
+  ! grep -q '^ *- SPEC_EXTRA=' "experimental/compose/$f.yaml" || { echo "FAIL $f.yaml sets its own SPEC_EXTRA"; fails=$((fails + 1)); }
+  check "$f.yaml = the default stack's config" "rc == 0 and c == $ref" SPEC_METHOD=dflash DFLASH_MODEL="$d1" \
+    SPEC_EXTRA="$extra" EXTRA_ARGS="$(sed -n 's/^ *- EXTRA_ARGS=//p' experimental/compose/$f.yaml)"
 done
 check "stock (no overlay) unchanged" "rc == 0 and out == json.dumps({'method': 'dflash', 'model': d1, 'num_speculative_tokens': 7}, separators=(',', ':'))" SPEC_METHOD=dflash DFLASH_MODEL="$d1"
 check "SPEC_TOKENS takes effect, widths capped" "rc == 0 and c['num_speculative_tokens'] == 5 and [r[2] for r in c['num_speculative_tokens_per_batch_size']] == [5,5,4,3,2,5]" SPEC_METHOD=dflash SPEC_TOKENS=5 DFLASH_MODEL="$d1" SPEC_EXTRA="$extra"

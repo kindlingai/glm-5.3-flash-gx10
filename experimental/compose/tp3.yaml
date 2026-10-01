@@ -5,7 +5,8 @@
 # load. Zero heads and zero expert columns contribute nothing. Set TP=3 and
 # point MODEL_HOST_DIR / DFLASH_HOST_DIR at the padded dirs.
 #
-# Stack LAST, after adaptive-k.yaml (it restates that file's EXTRA_ARGS and SPEC_EXTRA) and
+# Stack LAST, after adaptive-k.yaml (it restates that file's EXTRA_ARGS, and keeps
+# its SPEC_EXTRA) and
 # after fixes.yaml / sp.yaml / recoverssm.yaml (model.py there carries the
 # load hook, a no-op without tp_pad_orig in the config).
 services:
@@ -18,8 +19,5 @@ services:
       # adaptive-k.yaml's scheduler plus a data-parallel vision tower: its 16
       # ViT heads and 10240-wide merger do not split by 3.
       - EXTRA_ARGS=--scheduler-cls vllm.v1.core.sched.adaptive_k.AdaptiveKScheduler --mm-encoder-tp-mode data
-      # The speculative config as it was here before SPEC_EXTRA (no
-      # disable_eagle_block_drop: adaptive-k.yaml's copy never reached this layout).
-      - SPEC_EXTRA={"attention_backend":"TRITON_ATTN","num_speculative_tokens_per_batch_size":[[1,1,7],[2,2,5],[3,3,4],[4,4,3],[5,5,2],[6,32,7]]}
       # Padded weights process differently: never restore a TP=4 snapshot.
       - VLLM_WEIGHT_SNAPSHOT_TAG=tp3pad-2026-09-28

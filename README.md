@@ -557,7 +557,8 @@ parser default, [#58](https://github.com/kindlingai/glm-5.3-flash-gx10/pull/58))
 [tfolkman](https://github.com/tfolkman) (how a killed worker leaves the JIT lock,
 [#53](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/53)) ·
 [strusty](https://github.com/strusty) (megamoe and rows with no routed experts,
-[#63](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/63))
+[#63](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/63), and the DFlash
+block drop at TP=3, [#66](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/66))
 
 The files in `experimental/` that replace vLLM and FlashInfer files keep their
 Apache-2.0 headers, and [experimental/README.md](experimental/README.md#sources)
