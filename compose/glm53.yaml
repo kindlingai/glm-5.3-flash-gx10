@@ -200,8 +200,10 @@ services:
       # so unlike the trace above this is cheap enough to leave on.
       - TORCH_MEM_STATS_DIR=${TORCH_MEM_STATS_DIR:-/logs}
       - TORCH_MEM_STATS_INTERVAL=${TORCH_MEM_STATS_INTERVAL:-}
-      # Tool-call parser. Unset = the stock glm47; glm47_failclosed loads the
-      # fail-closed plugin (image/patches/glm47_failclosed.py).
+      # Tool-call parser. Unset = the image's default: the stock glm47, or
+      # glm47_failclosed on an image built before that became the default
+      # (the default lives in the image's entrypoint). Set glm47 or
+      # glm47_failclosed (image/patches/glm47_failclosed.py) to choose.
       - TOOL_PARSER=${TOOL_PARSER:-}
       # Appended to the serve command verbatim. Nothing the entrypoint selects
       # belongs here: EXTRA_ARGS is one string, and an override restating it
