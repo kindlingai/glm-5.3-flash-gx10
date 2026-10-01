@@ -149,9 +149,12 @@ Boot goes from about 8 minutes to about 3.5 once snapshots exist.
   logprob. A cut step grades only the drafts the estimator expected to
   survive, and fitting on those steps drifted it low over a long mixed
   workload. So every 4th step (`VLLM_DRAFT_TRUNC_EXPLORE`) skips the cut, and
-  only those steps train the estimator. On TP=4, measured on one boot after
-  the full gate: structured / code / prose decode +2 / +1-2 / +5-7%.
-  `VLLM_DRAFT_TRUNC_TAU=0` turns it off.
+  only those steps train the estimator. On TP=4, paired with
+  `gate/bench/bench.py` after a long mixed warm-up and net of drift: code
+  +3.3%, prose +3.2%, mixed streams +3.5 to 6.9%, structured -1.1%.
+  `VLLM_DRAFT_TRUNC_TAU=0` turns it off. `draft-trunc/` holds whole copies of
+  five vLLM files, so it checks the image's vLLM commit and stops the engine
+  on any other.
 - **recoverssm** (`fixes/recoverssm.py`, `compose/recoverssm.yaml`;
   `VLLM_GLM5NEXT_RECOVERSSM=0` turns it off): the KDA layers keep one recurrent state
   per request instead of one per draft position, and after sampling replay

@@ -22,8 +22,18 @@ truncates nothing.
 import os
 
 import torch
+import vllm
 
 from vllm.triton_utils import tl, triton
+
+# The other files in this directory are whole copies of vLLM's, with the cut added. They
+# match one vLLM commit, the image's VLLM_REF. On any other they would put back old code
+# over new, so the engine stops instead.
+VLLM_COMMIT = "ddd6fbca"
+if f"+g{VLLM_COMMIT}" not in vllm.__version__:
+    raise RuntimeError(f"experimental/draft-trunc copies vLLM {VLLM_COMMIT}'s files, but this image runs "
+                       f"vLLM {vllm.__version__}. Refresh the copies from this image, or remove the "
+                       "draft-trunc mounts from experimental/compose/adaptive-k.yaml.")
 
 _TAU = float(os.environ.get("VLLM_DRAFT_TRUNC_TAU") or 0)
 ENABLED = bool(os.environ.get("VLLM_DRAFT_TRUNC_CONTROL")) or _TAU > 0
