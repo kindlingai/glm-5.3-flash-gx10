@@ -370,6 +370,26 @@ as the KDA state allows, drop the KV pin back toward 20 GiB, and consider a
 larger `LONG_PREFILL_TOKEN_THRESHOLD`: the fairness reserve costs a solo user
 about 5% and buys nothing when every step has several requests in it anyway.
 
+### The display carveout (kindling-spark-os)
+
+The GB10 firmware reserves 2 GiB of memory for a display that the driver never
+uses on this chip. [kindling-spark-os](https://github.com/kindlingai/kindling-spark-os)
+runs `dispramd`, which lends that range to CUDA processes. On a host where its
+socket (`/run/dispram/dispram.sock`) exists, `./glm53` adds
+`experimental/compose/dispram.yaml`. That file mounts the socket and the host's
+vLLM plugin, which adds the 1.99 GiB to the pinned KV pool and maps the pool's
+tail onto the carveout. `DISPRAM=0` leaves it out. On DGX OS nothing changes.
+
+| | KV without | KV with | |
+|---|---|---|---|
+| TP=2 (8 GiB pin) | 1.10M tokens | 1,379,896 | +25% |
+| TP=4 (26 GiB pin) | ~4.40M | 4,738,501 | +8% |
+
+Every rank needs it, because vLLM sizes the pool by the smallest rank.
+kindling-spark-os keeps only `/home` and the docker directories from the root
+disk, so `/srv/models` does not exist there: set `MODEL_HOST_DIR` and
+`DFLASH_HOST_DIR` to the checkpoints' real directories.
+
 ## Patches
 
 Applied at build time from `image/patches/`; each asserts its anchor matches

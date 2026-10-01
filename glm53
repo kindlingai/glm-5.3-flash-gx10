@@ -8,6 +8,10 @@
 #   ./glm53 -f compose/ext.yaml up -d   your own files, after the overlays
 #   ./glm53 --stock up -d               compose/glm53.yaml alone (stock kernels;
 #                                       the entrypoint also wants ALLOW_STOCK=1)
+#
+# On a host running dispramd (kindling-spark-os) it also adds
+# experimental/compose/dispram.yaml, which puts the tail of the KV pool in the
+# GB10's display carveout. DISPRAM=0 leaves it out.
 set -e
 cd "$(dirname "$0")"
 overlays=(arx snapshot adaptive-k fp8 megamoe fixes sp recoverssm)
@@ -23,5 +27,8 @@ while [ $# -gt 0 ]; do
 done
 if [ $stock = 0 ]; then
   for o in "${overlays[@]}"; do files+=(-f "experimental/compose/$o.yaml"); done
+  if [ "${DISPRAM:-1}" != 0 ] && [ -S /run/dispram/dispram.sock ] && [ -d /opt/kindling/dispram/python ]; then
+    files+=(-f experimental/compose/dispram.yaml)
+  fi
 fi
 exec docker compose "${files[@]}" "${extra[@]}" "$@"
