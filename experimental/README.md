@@ -48,7 +48,7 @@ Debug switches: `VLLM_MOE_PREFILL_CHECK=N` and `VLLM_GLM_SP_MOE_CHECK=N` also ru
 
 ### Snapshot version and tag
 
-A snapshot holds processed weights. Its key covers the checkpoint, the TP layout, the MoE backend and `max_num_batched_tokens`. Two kinds of change need more:
+A snapshot holds processed weights. Its key covers the checkpoint (shard headers plus 1 MiB sampled at three points of each shard's tensor data, so an in-place update to a same-shape revision gets a new key), the TP layout, the MoE backend and `max_num_batched_tokens`. Two kinds of change need more:
 
 - A code change to how weights are processed (`weight_snapshot.py`, `dense_fp8.py`, the loader patches): bump `SNAPSHOT_VERSION` in `weight_snapshot.py`. Snapshot names start with `v<version>-`, and each boot deletes the snapshots of every other version from its snapshot directory, for all TP sizes.
 - A knob that changes processing (`VLLM_DENSE_W4`, `VLLM_DENSE_FP8*`): a new `VLLM_WEIGHT_SNAPSHOT_TAG` (set in fp8.yaml). Snapshots under the old tag stay on disk until the next version bump.

@@ -33,12 +33,47 @@ logger = init_logger(__name__)
 
 # Bump when a change to weight processing or to this file's format makes
 # existing snapshots wrong in a way the key cannot see.
-SNAPSHOT_VERSION = 2
+# 3: the key samples checkpoint tensor bytes (issue #62).
+SNAPSHOT_VERSION = 3
 # A snapshot or a partly written one, of any version (version 1 had no prefix).
 _SNAPSHOT_NAME = re.compile(r"(v\d+-)?(target|draft)-tp\d+of\d+-dp\d+-[0-9a-f]{16}(\.tmp\d+)?")
 
 _ALIGN = 4096
 _CHUNK = 64 << 20  # bytes per read; two pinned buffers of this size
+_SAMPLE = 1 << 20  # bytes read at each of three points of every shard
+
+
+def _content_fingerprint(model: str) -> str | None:
+    """Hash of sampled tensor bytes and the size of every safetensors shard.
+
+    vLLM's checkpoint hash covers only the shard headers, so an in-place update
+    to a revision with the same tensor names, shapes and dtypes (DFlash2
+    7d74cdd -> bf582e4) keeps the key and restores the old weights (#62). This
+    reads 1 MiB at the start, middle and end of each shard's data, so a change
+    confined to tensors between the samples is still missed. vLLM #59648 is
+    the upstream fix. None for a repo id that is not a local directory, like
+    vLLM's hash.
+    """
+    if not os.path.isdir(model):
+        return None
+    shards = sorted(f for f in os.listdir(model) if f.endswith(".safetensors"))
+    if not shards:
+        return None
+    h = hashlib.sha256()
+    for name in shards:
+        path = os.path.join(model, name)
+        size = os.path.getsize(path)
+        h.update(f"{name}:{size}".encode())
+        with open(path, "rb") as f:
+            start = 8 + int.from_bytes(f.read(8), "little")
+            span = max(size - start - _SAMPLE, 0)
+            for off in (start, start + span // 2, start + span):
+                f.seek(off)
+                h.update(f.read(_SAMPLE))
+            # Leave no page cache behind: on GB10 it competes with CUDA.
+            if hasattr(os, "posix_fadvise"):
+                os.posix_fadvise(f.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+    return h.hexdigest()
 
 
 def _dtype(name: str) -> torch.dtype:
@@ -83,6 +118,7 @@ class Snapshot:
             )
         )
         key["tag"] = os.environ.get("VLLM_WEIGHT_SNAPSHOT_TAG", "")
+        key["content"] = _content_fingerprint(model_config.model)
         # The indexer's top-k scratch buffer has one row per batched token.
         key["max_num_batched_tokens"] = vllm_config.scheduler_config.max_num_batched_tokens
         # The MoE backend decides the processed expert layout (marlin repacks
