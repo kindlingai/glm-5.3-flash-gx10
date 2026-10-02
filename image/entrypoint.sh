@@ -205,20 +205,37 @@ fabric_port() {
 if [[ -z "${NCCL_IB_HCA:-}" || -z "${NCCL_IB_GID_INDEX:-}" ]]; then
   _waited=0
   while :; do
-    _hcas=""; _gid=""; _mismatch=""
+    _hcas=""; _gid=""; _mismatch=""; _missing=""
     for _p in $FABRIC_SUBNETS; do
-      _r=$(fabric_port "$_p") || continue
+      if ! _r=$(fabric_port "$_p"); then _missing="${_missing:+$_missing }$_p"; continue; fi
       _d="${_r%% *}"; _i="${_r##* }"
       [[ -n "$_gid" && "$_i" != "$_gid" ]] && _mismatch="$_d at $_i, expected $_gid"
       _gid="${_gid:-$_i}"
       _hcas="${_hcas:+$_hcas,}$_d"
     done
-    [[ -n "$_hcas" ]] && break
+    # In a mesh every rank lists the same subnets and must hand NCCL the same
+    # number of devices. A rank that starts while its second root is still
+    # settling joins with one device against its peers' two, NCCL logs
+    # "Detected mixed local Net device counts across ranks (min 1, max 2)",
+    # and init hangs. Seen after a reboot, when the container started before
+    # the second root's address and GID came up. So a mesh waits for all of
+    # them. A ring gives each box its own subnets and fabric_ring.py picks
+    # devices per neighbour, so any one of them is enough to go on, as before.
+    [[ -n "$_hcas" && ( -z "$_missing" || "$FABRIC_LAYOUT" != mesh ) ]] && break
     if (( _waited >= ${ROCE_SETTLE_S:-60} )); then
-      echo "FATAL: no RoCE v2 GID for any of: $FABRIC_SUBNETS" >&2
+      if [[ -z "$_hcas" ]]; then
+        echo "FATAL: no RoCE v2 GID for any of: $FABRIC_SUBNETS" >&2
+      else
+        echo "FATAL: no RoCE v2 GID for $_missing after ${_waited}s, while $_hcas came up." >&2
+        echo "This rank would bring fewer NCCL devices than its peers, and NCCL init would hang." \
+          "Bring that port up, or drop its subnet from FABRIC_SUBNETS on every box." >&2
+      fi
       ip -br addr show >&2
       ls /sys/class/infiniband/ >&2 || echo "(no /sys/class/infiniband at all)" >&2
       exit 1
+    fi
+    if [[ -n "$_hcas" ]] && (( _waited % 15 == 0 )); then
+      echo "fabric: $_hcas up, waiting for $_missing (${_waited}s)"
     fi
     sleep 5; _waited=$(( _waited + 5 ))
   done

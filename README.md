@@ -447,8 +447,8 @@ and leaves the one that fails on this checkpoint. Leave the plugin's
 and this checkpoint carries real per-projection scales.
 
 `dev/patch-tests/` holds tests for two of the patches and for the entrypoint's
-mentat discovery (`_entrypoint_discovery_test.sh`); the image does not use
-them. The old recipe's `gb10_topk_fallback.py` is now a flag
+mentat discovery (`_entrypoint_discovery_test.sh`) and fabric-port
+derivation (`_entrypoint_fabric_test.sh`); the image does not use them. The old recipe's `gb10_topk_fallback.py` is now a flag
 (`--sparse-indexer-topk-backend per_row`). `thinking_budget_guard.py` and
 `glm53_kpool_tail_ring.py` (the spec-decode tail ring,
 [vllm#58454](https://github.com/vllm-project/vllm/pull/58454)) are upstream.
