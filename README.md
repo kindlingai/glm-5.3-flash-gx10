@@ -389,7 +389,13 @@ tail onto the carveout. `DISPRAM=0` leaves it out. On DGX OS nothing changes.
 | | KV without | KV with | |
 |---|---|---|---|
 | TP=2 (8 GiB pin) | 1.10M tokens | 1,379,896 | +25% |
-| TP=4 (26 GiB pin) | ~4.40M | 4,738,501 | +8% |
+| TP=4 (26 GiB pin) | 4,395,612 | 4,740,713 | +8% |
+| TP=4, pin raised to 28 GiB | 4,395,612 | 5,083,602 | +16% |
+
+The 64 KiB kernel also returns ~2 GiB of RAM, so at TP=4 `dispram.yaml` raises
+the pin by 2 GiB (`KV_EXTRA_MEMORY`). With the pool full (twelve 511k-token
+prompts) the head still had 9.5 GiB free and no swap in use. TP=2 has no room
+for it, and TP=3 and 6 are unmeasured, so their pins stay as they are.
 
 Every rank needs it, because vLLM sizes the pool by the smallest rank.
 kindling-spark-os keeps only `/home` and the docker directories from the root

@@ -6,6 +6,10 @@
 # adds what dispramd can lend (1.99 GiB) to the pinned KV pool and maps the
 # pool's tail onto it.
 #
+# kindling-spark-os's 64 KiB kernel also returns ~2 GiB of RAM, so at TP=4
+# this raises the pinned pool by 2 GiB (KV_EXTRA_MEMORY). TP=2 has no room for
+# it, and TP=3 and 6 are unmeasured.
+#
 # ./glm53 adds this file by itself when /run/dispram/dispram.sock exists.
 # DISPRAM=0 leaves it out. Every rank should have it: vLLM sizes the pool by
 # the smallest rank, so one box without dispramd cancels the gain.
@@ -16,3 +20,4 @@ services:
       - /opt/kindling/dispram/python:/opt/dispram:ro
     environment:
       - PYTHONPATH=/opt/dispram
+      - KV_EXTRA_MEMORY=${KV_EXTRA_MEMORY:-2147483648}

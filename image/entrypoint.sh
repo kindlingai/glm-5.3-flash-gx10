@@ -46,7 +46,9 @@ fi
 # fitted on code and prose at two concurrencies with k forced to 2 and 7.
 _rs=0; [[ "${VLLM_GLM5NEXT_RECOVERSSM:-0}" == 1 ]] && _rs=1
 case "$TP" in
-  4) : "${KV_CACHE_MEMORY:=27917287424}" "${MAX_MODEL_LEN:=524288}"
+  4) # KV_EXTRA_MEMORY (bytes) raises the default pin. dispram.yaml sets 2 GiB,
+     # the RAM kindling-spark-os's 64 KiB kernel returns.
+     : "${KV_CACHE_MEMORY:=$(( 27917287424 + ${KV_EXTRA_MEMORY:-0} ))}" "${MAX_MODEL_LEN:=524288}"
      (( _rs )) && : "${MAX_NUM_SEQS:=64}" "${VLLM_ADAPTIVE_K_MODEL:=26.4,0.660,0.484}"
      # With the drafter's KV in its own pool (fixes.yaml), ~50 requests' KDA
      # states fit in the pool; without it, 32.
