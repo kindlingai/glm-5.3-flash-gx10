@@ -240,7 +240,9 @@ the preflight warns about it. To check a box:
     curl -s localhost:6380/status | jq .addr_tags
 
 The daemon names the box by its default route's address, which must be the
-LAN address. Set `MENTAT_NODE_IP` in mentat's `.env` when it is not. The
+LAN address. Set `MENTAT_NODE_IP` in mentat's `.env` when it is not, and on
+any box whose mentatd starts at boot: it can start before there is a default
+route and name the box `127.0.0.1` (see Troubleshooting). The
 model container registers with the daemon on its own box
 (`127.0.0.1:6379`). That daemon passes the registration on to the daemon
 mentat elected as its head. With `HEAD_HOST` set, the container registers
@@ -553,6 +555,39 @@ entrypoint derives it at every start. To read a table:
       echo "$i $(cat $p/gid_attrs/types/$i) $(cat $p/gids/$i)"; done
 
 The right entry is the RoCE v2 one for the box's static fabric address.
+
+**`FATAL: fabric ports disagree on GID index` once the second root is up.**
+Each address takes a RoCE v1 and a v2 slot as it appears, so the IPv4 entry's
+index depends on how many IPv6 addresses its interface held first. On one
+cluster the first root's interface, managed by NetworkManager, carried two
+link-locals (the kernel's and NetworkManager's stable-privacy one) and its
+IPv4 RoCE v2 entry sat at 5, while a second root brought up with `ip addr add`
+had one link-local and landed at 3 (2026-10-01). Configure both roots the same
+way, then read both tables after a reboot, not only after setup. Where that is
+not possible, the boot step that adds the second root's address has to check
+the two indexes and fix them before the model starts; that cluster re-adds the
+IPv4 behind extra link-locals until they match.
+
+**A rebooted box joins with one fabric device, and NCCL init hangs.** NCCL
+logs `Detected mixed local Net device counts across ranks (min 1, max 2)`.
+Docker starts containers with a restart policy as soon as it starts, which can
+be before the second root's address and GID exist, and the entrypoint uses the
+ports it finds when it starts. Order Docker after whatever configures the
+fabric, for example with a drop-in
+`/etc/systemd/system/docker.service.d/after-fabric.conf`:
+
+    [Unit]
+    Wants=<fabric unit>.service
+    After=<fabric unit>.service
+
+**A rebooted box never rejoins, and the head waits at `waiting for 4 GPUs, have 3`.**
+mentatd started before the box had a default route and named it `127.0.0.1`;
+the model container on that box registers under that name, and the head
+refuses it (`claimed 192.0.2.3, an address of 127.0.0.1`). Set
+`MENTAT_NODE_IP` to the box's LAN address in mentat's `.env` on every box, so
+the daemon never guesses. A cluster already stuck this way needed all four
+down, mentatd restarted on every box, then all four up (2026-10-01):
+restarting the one box's mentatd and model was not enough.
 
 ## Credits
 
