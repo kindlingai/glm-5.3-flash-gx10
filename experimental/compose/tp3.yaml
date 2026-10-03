@@ -15,7 +15,9 @@ services:
       - ../experimental/tp3/tp3pad.py:/usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/common/tp3pad.py:ro
       - ../experimental/tp3/vocab_parallel_embedding.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/vocab_parallel_embedding.py:ro
     environment:
-      - TP=3
+      # TP=3 unless the .env says otherwise — it sets TP=RING3 for the
+      # three-box triangle (experimental/tp3/README.md, RING3 section).
+      - TP=${TP:-3}
       # adaptive-k.yaml's scheduler plus a data-parallel vision tower: its 16
       # ViT heads and 10240-wide merger do not split by 3.
       - EXTRA_ARGS=--scheduler-cls vllm.v1.core.sched.adaptive_k.AdaptiveKScheduler --mm-encoder-tp-mode data
