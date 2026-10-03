@@ -21,13 +21,22 @@ set -euo pipefail
 
 TP="${TP:-4}"
 MTP="${MTP:-1}"
-# TP=RING4 is TP=4 on four boxes cabled in a loop with no switch. mentat
-# places the ranks in cable order, and fabric_ring.py sets each rank's NCCL
-# and arx devices from the neighbours mentat gives it.
+# TP=RING4 is TP=4 on four boxes cabled in a loop with no switch, and
+# TP=RING3 is the zero-padded TP=3 checkpoint (experimental/tp3) on three
+# boxes cabled as a triangle. mentat places the ranks in cable order (a ring
+# of three needs the third box's port back to the first), and fabric_ring.py
+# sets each rank's NCCL and arx devices from the neighbours mentat gives it.
+# In a ring of three each rank's neighbours are its only peers, so arx needs
+# no relay there; arxbig's ring reduce-scatter assumes four ranks, so RING3
+# keeps prefill-sized collectives on NCCL (VLLM_ARXBIG=0).
 FABRIC_LAYOUT=mesh
 if [[ "$TP" == RING4 ]]; then
   TP=4; FABRIC_LAYOUT=ring
   export MENTAT_CLAIM_LAYOUT=ring
+elif [[ "$TP" == RING3 ]]; then
+  TP=3; FABRIC_LAYOUT=ring
+  export MENTAT_CLAIM_LAYOUT=ring FABRIC_RING_GRAPH=0 VLLM_ARXBIG=0
+  FABRIC_CHECK="${FABRIC_CHECK:-0}"   # its mesh-mode probe cannot reach across cables
 fi
 
 # --- per-TP defaults ---------------------------------------------------------
@@ -84,7 +93,7 @@ case "$TP" in
      (( _rs )) && : "${MAX_NUM_SEQS:=16}" "${VLLM_ADAPTIVE_K_MODEL:=32.1,1.32,0.427}"
      : "${MAX_NUM_SEQS:=4}"
      : "${VLLM_ADAPTIVE_K_MODEL:=35.0,1.27,0.8}" ;;
-  *) echo "FATAL: TP=$TP; this recipe is tuned for TP=4 or TP=RING4 (four boxes), TP=6 (six), TP=3 (three) or TP=2 (two)" >&2; exit 1 ;;
+  *) echo "FATAL: TP=$TP; this recipe is tuned for TP=4 or TP=RING4 (four boxes), TP=6 (six), TP=3 or TP=RING3 (three) or TP=2 (two)" >&2; exit 1 ;;
 esac
 export VLLM_ADAPTIVE_K_MODEL
 # SPEC_METHOD picks the drafter: dflash (the separate DFlash2 draft model at
@@ -240,6 +249,17 @@ else
   echo "fabric: NCCL_IB_HCA=$NCCL_IB_HCA gid=$NCCL_IB_GID_INDEX (both pinned; derivation skipped)"
 fi
 export NCCL_IB_HCA NCCL_IB_GID_INDEX
+# TP=RING3: a triangle is a full mesh with one cable per pair and a subnet per
+# cable, and GID indexes differ per port. Pin no index; subnet-aware routing
+# opens each peer's QPs on the device in that peer's subnet. Set here, for
+# every process, rather than in fabric_ring.py, which only runs where mentat
+# hands the process its ring placement.
+if [[ "${FABRIC_RING_GRAPH:-1}" == 0 ]]; then
+  unset NCCL_IB_GID_INDEX
+  export NCCL_IB_SUBNET_AWARE_ROUTING=1 NCCL_CROSS_NIC=1 NCCL_IB_MERGE_NICS=0 \
+    NCCL_IB_ADDR_FAMILY=AF_INET NCCL_IB_ROCE_VERSION_NUM=2
+  echo "fabric: subnet-aware routing over $NCCL_IB_HCA (no pinned GID index)"
+fi
 # The EXACT interface holding VLLM_HOST_IP, not a prefix. This is only the
 # out-of-band bootstrap path -- the IB devices above carry the data -- and a
 # prefix matches every interface that happens to share it. Once the fabric
