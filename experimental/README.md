@@ -26,6 +26,7 @@ Leave a compose file out to drop that piece, or set its switch in `.env` (every 
 | `VLLM_ARX_RING` | 0 (1 with `TP=RING4`) | for boxes cabled in a ring with no switch: arx and arxbig open QPs only to rank r-1 and r+1, and at four ranks the rank between two others relays their data, with the same results as over the switch. arx takes rings of 2, 3 or 4; arxbig takes 2 or 4, so a ring of 3 needs `VLLM_ARXBIG=0` |
 | `ARX_RING_PREV_HCAS` | from mentat with `TP=RING4` | with `VLLM_ARX_RING=1`: the two RDMA devices of the port cabled to rank r-1. Each device uses the GID of its own IPv4 address. Device r must share its subnet with device r of the neighbour's list for that cable: root 0 then root 1 when every box is cabled the same way, root 1 first on a box whose cabling is mirrored |
 | `ARX_RING_NEXT_HCAS` | unset | the same for the port cabled to rank r+1 |
+| `FABRIC_RING_GRAPH` | 1 (0 with `TP=RING3`) | with `fabric_ring.py` on a fabric ring: 1 gives NCCL a ring graph and `NCCL_ALGO=Ring`; 0 uses `NCCL_IB_SUBNET_AWARE_ROUTING` instead, for a triangle, where a graph would send to one neighbour over the cable to the other |
 | `VLLM_GLM_SP_TP` | 1 | sequence parallelism for forwards of `VLLM_GLM_SP_MIN_TOKENS` (1024) or more (sp.yaml) |
 | `VLLM_GLM_SP_FP8_GATHER` | 1 | gather KDA attention inputs as FP8 |
 | `VLLM_GLM_SP_MOE_FUSED` | 1 | MoE combine feeding the RDMA reduce-scatter; needs arx.yaml with `VLLM_ARXBIG_RS=1` and megamoe.yaml with `VLLM_MOE_PREFILL=1` |

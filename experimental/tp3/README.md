@@ -45,7 +45,8 @@ fabric), on three boxes.
          /srv/models/glm-5.3-flash-nvfp4 /srv/models/glm-5.3-flash-nvfp4-tp3 \
          /srv/models/glm-5.3-flash-dflash2 /srv/models/glm-5.3-flash-dflash2-tp3
 
-2. **compose/.env on every box** (tp3.yaml sets `TP=3`):
+2. **compose/.env on every box** (tp3.yaml takes `TP` from the `.env`, defaulting
+   to 3):
 
        MODEL_HOST_DIR=/srv/models/glm-5.3-flash-nvfp4-tp3
        DFLASH_HOST_DIR=/srv/models/glm-5.3-flash-dflash2-tp3
@@ -63,6 +64,44 @@ fabric), on three boxes.
 The entrypoint's `TP=3` case sets the KV pin (12 GiB), block size (3456),
 `MAX_NUM_SEQS` 64 with RecoverSSM (32 without) and the adaptive-k starting cost. With RecoverSSM on, the head keeps ~6.6 GB of
 host memory free while serving; a 16 GiB pin would leave ~2.6 GB, so do not raise it.
+
+## Triangle, no switch (TP=RING3)
+
+The same padded checkpoint on three GB10 boxes cabled as a triangle: each
+box's two ConnectX-7 ports go to its two neighbours, one cable per port, and
+the third box's port cables back to the first. No switch. Set `TP=RING3` in
+`compose/.env`; the entrypoint maps it to its `TP=3` case (KV pin, block
+size, `MAX_NUM_SEQS`, weight padding) and adds the ring wiring.
+
+- **Addresses**: each cable carries two 100G halves, one per PCIe root, and
+  root 0 faces root 0 on the neighbour, root 1 faces root 1 (check with
+  `ib_write_bw -x 0` between the unaddressed devices: the link-local RoCE v1
+  GID needs no address). Give each half its own `/24`, MTU 9000: six subnets
+  for three cables. A device joins the fabric only when its netdev carries an
+  IPv4. `fabric_ring.py` expects both roots of each port, as on RING4.
+
+- **Compose overlays**: the TP=3 list above, with `TP=RING3` in
+  `compose/.env` (tp3.yaml inherits it).
+
+- **mentat**: 0.17.1 places ring claims of any size (a ring closes only at
+  three members or more), so `MENTAT_CLAIM_LAYOUT=ring` needs no member
+  count; the entrypoint sets it and the claim takes the three bundles of the
+  TP=3 group. Tag the LAN interface `lan` and both roots' fabric netdevs
+  `rdma` in `MENTAT_ANNOUNCE_IFACES` (step 4 of the main README), for example
+  `en*f*np*=connectx+rdma,en*=lan`. Each rank
+  gets its neighbours' addresses and the local interface toward each from
+  mentat, and `fabric_ring.py` finds both roots' devices behind each.
+
+- **NCCL**: subnet-aware routing (`NCCL_IB_SUBNET_AWARE_ROUTING=1`, no pinned
+  GID index), not a ring graph. NCCL takes one device per channel for both
+  directions of a graph, so a graph cannot receive from one neighbour and
+  send to the other on different cables. The GID index differs per cable and
+  moves on reboot; NCCL finds each device's address GID itself.
+
+- **arx**: ring mode, with `ARX_RING_PREV_HCAS` / `ARX_RING_NEXT_HCAS` from
+  `fabric_ring.py`. In a ring of three every peer is a neighbour, so nothing
+  is relayed. arxbig's ring reduce-scatter assumes four ranks, so the
+  entrypoint sets `VLLM_ARXBIG=0` and prefill-sized collectives stay on NCCL.
 
 ## Tried and not kept
 
@@ -152,11 +191,11 @@ preemptions or restarts.
 
 ## On cables, with no switch
 
-Three boxes with one cable per pair also form a ring. The entrypoint has no
-mode for it (only `TP=RING4`), so the NCCL ring and each rank's
-`ARX_RING_PREV_HCAS` / `ARX_RING_NEXT_HCAS` are set by hand, with
-`VLLM_ARX_RING=1` and `VLLM_ARXBIG=0`: arx's ring takes three ranks, arxbig's
-does not ([experimental/README.md](../README.md)).
+Three boxes with one cable per pair also form a ring. `TP=RING3` sets it up:
+subnet-aware NCCL routing, arx in ring mode (`VLLM_ARX_RING=1`) with arxbig
+off, since arxbig's ring does not take three ranks
+([experimental/README.md](../README.md)). The section below has the start
+command; the RING3 section above has the fabric layout.
 
 Through a switch, with both neighbours on one port, ring and mesh at three
 ranks gave the same bits and the same all-reduce latency: 14.5 / 21.5 / 45.7 /
@@ -175,3 +214,30 @@ their own harness, so these aren't comparable with the main README's table
   104, 236 and 422 s.
 - The first boot took 753 s and later boots 184-204 s; `smoketest/run.sh`
   passed 8/8.
+
+### RING3 start command
+
+`compose/.env` on every box:
+
+    TP=RING3
+    HEAD_HOST=<head LAN address>
+
+Then, on every box:
+
+    ./glm53 -f experimental/compose/tp3.yaml -f experimental/compose/seqcap32.yaml up -d
+
+`seqcap32.yaml` is optional. It caps requests at 32 and graphs at 256 tokens, and spends the ~5 GiB that frees on KV
+(18 GiB pin), for long-context agents that never run more than 32 requests.
+
+Synthetic agent turns at temperature 0, thinking off. The first three rows are from 2026-09-30 on main 6861dd9;
+the last is from 2026-10-03 on main c748079 (with #50's draft cut and #59).
+
+| agent turns at 131k context, whole-turn tok/s | 1 agent | 3 agents |
+|---|---|---|
+| 12 GiB pin, 64 requests, arx off (1,905,585 KV tokens) | 45.3 | 25.1 |
+| `seqcap32.yaml`, arx off (2,960,882) | 49.7 | 23.8, 23.5 |
+| `seqcap32.yaml`, arx ring (2,960,882) | 53.6 | 24.4, 25.3 |
+| `seqcap32.yaml`, arx ring, c748079 (2,960,882) | 54.7 | 27.1, 26.1 |
+
+Decode per stream at 3 agents, 2026-09-30: 34.4 / 30.3, 31.8 / 43.0, 37.0. Cold prefill with arx: 130k tokens
+3,413 tok/s, 262k 3,210 tok/s (2,870 without); on c748079 3,396 and 3,201. `smoketest/run.sh` 8/8 on both.

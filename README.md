@@ -65,6 +65,9 @@ prefill at 4,745 / 4,737 tok/s at 32k / 64k (mentat 0.17.1, every overlay,
 RecoverSSM off). That is 12% below the switched TP=4 column on code, 9% on
 structured, level on prose, and about 5% below our RigMark prefill.
 [experimental/README.md](experimental/README.md) has the details.
+`TP=RING3` runs the zero-padded TP=3 checkpoint on three boxes cabled as a
+triangle, one subnet per cable and PCIe root.
+[experimental/tp3/README.md](experimental/tp3/README.md) has the steps.
 
 [model.yaml](model.yaml) has the checkpoints and the memory footprint, and
 [KNOBS.md](KNOBS.md) lists every environment variable the entrypoint reads.
@@ -86,7 +89,8 @@ changes the table changes kindling.json too.
   the model: `sudo systemctl set-default multi-user.target && sudo systemctl
   isolate multi-user.target`. The preflight warns while one is running.
 - **A ConnectX-7 fabric between them**, through one switch (ours is a
-  MikroTik CRS812 at 200G), or cabled in a loop for `TP=RING4`, with RoCE
+  MikroTik CRS812 at 200G), cabled in a loop for `TP=RING4`, or in a
+  triangle (one subnet per cable and PCIe root) for `TP=RING3`, with RoCE
   working. Through a switch, each box needs a static IPv4 on its ConnectX
   interface, all in one subnet, MTU 9000. For full prefill speed also give
   the ConnectX-7's second PCIe root an address in a second subnet on every
