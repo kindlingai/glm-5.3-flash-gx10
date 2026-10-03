@@ -1,0 +1,12 @@
+# The graphs this drops free ~5 GiB a rank at capture and ~8 GiB at idle; 18 GiB of KV instead of 12 holds ~2.9M tokens.
+# At most 32 requests, and CUDA graphs only up to the widest 32-request decode step (32 x 8 = 256 tokens),
+# instead of vLLM's 2x ceiling of 512. The list is vLLM's own list for this schedule, cut at 256.
+# Same EXTRA_ARGS as tp3.yaml plus the capture sizes, so it goes after it; the speculative config still comes
+# from adaptive-k.yaml's SPEC_EXTRA. The capture list stops at 256 whatever MAX_NUM_SEQS is set to; a higher
+# cap needs a longer list.
+services:
+  glm53:
+    environment:
+      - MAX_NUM_SEQS=${MAX_NUM_SEQS:-32}
+      - KV_CACHE_MEMORY=${KV_CACHE_MEMORY:-19327352832}
+      - EXTRA_ARGS=--scheduler-cls vllm.v1.core.sched.adaptive_k.AdaptiveKScheduler --mm-encoder-tp-mode data --cudagraph-capture-sizes 1 2 3 4 5 6 8 10 12 15 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256
