@@ -1,0 +1,27 @@
+# OOM-hardening for 2xDGX Spark (hermes, 2026-10-02).
+# Everything here exists because GB10 unified memory livelocks (power-button
+# only) on OOM, and the stock defaults (KV pin 26 GiB, batch 8192) with the
+# full NVFP4 weights leave <3 GiB free per box. These values are the ones we
+# ran the whole GLM-5.3 benchmark suite on (variant K):
+#   KV_CACHE_MEMORY      7.2 GiB pin (7730941132) - was 26 GiB stock: a cold
+#                        sweep to 262k fit with ~4.7% host mem left and ZERO
+#                        earlyoom kills.
+#   MAX_MODEL_LEN        500000 (was 163840 stock TP2 default)
+#   MAX_NUM_BATCHED_TOKENS 6144 (was 4096; +10% prefill, -9% gen, KV -0.4%)
+#   MAX_NUM_SEQS         6 (RecoverSSM keeps 1 KDA state/request; 16 stock)
+#   LONG_PREFILL_TOKEN_THRESHOLD 2304 (entrypoint derives it, keep default)
+# Plus the diagnostic ray/_host.py: mentat drops a remote rank's traceback, so
+# a worker raising during setup shows only the message on the head. This copy
+# adds traceback.print_exc() to both except BaseException handlers and
+# SIGTERM/dump-traceback interception (NOTES.md recipe) - it found the
+# signal-15 head deaths. Bind-mounted read-only so it survives --force-recreate
+# (docker cp did not live in the image).
+services:
+  glm53:
+    volumes:
+      - ../experimental/fixes/ray_host.py:/usr/local/lib/python3.12/dist-packages/ray/_host.py:ro
+    environment:
+      - KV_CACHE_MEMORY=7730941132
+      - MAX_MODEL_LEN=500000
+      - MAX_NUM_BATCHED_TOKENS=6144
+      - MAX_NUM_SEQS=6
