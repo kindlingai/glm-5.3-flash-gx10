@@ -6,13 +6,16 @@ cache_salt each) with their decode-time logprobs, rescores the same token ids as
 a prompt (prompt_logprobs), and compares the two per 2,000-token window.
 
 On this stack decode and prefill differ by design (batch-size invariance traded
-for speed), so the absolute gap is not the signal: a flat 0.11-0.24 nats mean
-|diff| from the first window to the last is normal here. The signal is growth:
-a reply that degrades as it gets longer (a broken drafter, a cache or state bug
-that compounds) shows windows late in the reply well above its first ones.
+for speed), so the absolute gap is not the signal: about 0.05-0.31 nats mean
+|diff| per window is normal here (first windows 0.13-0.30, usually falling as a
+reply settles into code). The signal is growth: a reply that degrades as it gets
+longer (a broken drafter, a cache or state bug that compounds) shows windows late
+in the reply well above its first ones, or falls into a loop.
 
   FAIL  late windows (second half) average > 1.8x the first two windows, or any
-        window > 0.40, or a 16-token run repeated > 8 times in one window
+        window > 0.40, or a loop: one block repeated back to back for 256 tokens
+        or more (repetitive code, like test boilerplate with other names, is not
+        back to back, so it does not count)
   PASS  otherwise (a reply that stops before 4,000 tokens is skipped; at least
         one must reach it, else INCONCLUSIVE)
 
@@ -21,19 +24,21 @@ windows, decode vs prompt_logprobs): 22 16K replies from unaffected builds all
 PASS (10 on this stack at 1173cc1..78b9540: late/first 0.92-1.37, max window
 0.244; 12 on a vLLM-main build). On an 8-bit drafter that degraded long replies,
 7 of 9 replies FAIL (late/first 2.31-5.59, or a window at 0.995); the 2 that
-PASS show no growth within that reply.
+PASS show no growth within that reply. Loop rule: across 47 saved 16K replies
+from this stack and earlier builds the longest back-to-back repeat in any window
+was 13-50 tokens, so the 256 bar has about 5x headroom.
 
 usage: longreply.py [REPLIES]   (GATE_URL, GATE_MODEL as for the other gate tools)
 Each 16K reply took ~36 min here with ~30 other streams running; quiet is faster
 (not measured on this stack).
 """
 import concurrent.futures as cf, json, os, sys, time, urllib.request
-from collections import Counter
 
 BASE = os.environ.get("GATE_URL", "http://127.0.0.1:8002")
 MODEL = os.environ.get("GATE_MODEL", "glm53")
 REPLIES = int(sys.argv[1]) if sys.argv[1:2] and sys.argv[1].isdigit() else 2
 TOKENS, WIN, MIN_LEN = 16000, 2000, 4000
+LOOP = 256  # tokens of back-to-back repetition that count as a loop
 MESSAGES = [{"role": "user", "content":
     "Write a complete, production-quality Python implementation of a persistent key-value store with a write-ahead "
     "log, crash recovery, compaction, range scans and a small CLI. Explain each design decision as you go, then "
@@ -63,8 +68,20 @@ def rescore(toks):
     return [next(iter(x.values()))["logprob"] if x else None for x in lp]
 
 
+def longest_loop(ids, max_period=256):
+    """Longest stretch in which every token equals the one p tokens earlier, for some period p <= max_period:
+    a block repeated back to back. Similar blocks with different names (test boilerplate) break the stretch."""
+    best = 0
+    for p in range(1, min(max_period, len(ids) // 2) + 1):
+        run = 0
+        for j in range(p, len(ids)):
+            run = run + 1 if ids[j] == ids[j - p] else 0
+            best = max(best, run)
+    return best
+
+
 def windows(toks, res):
-    """Per window of >= 500 tokens: (start, mean |diff|, per 1k > 1 nat, top 16-token repeat)."""
+    """Per window of >= 500 tokens: (start, mean |diff|, per 1k > 1 nat, longest back-to-back repeat in tokens)."""
     out = []
     for k in range(0, len(toks), WIN):
         pairs = [(a[1], b) for a, b in zip(toks[k:k + WIN], res[k:k + WIN]) if b is not None]
@@ -72,8 +89,7 @@ def windows(toks, res):
             continue
         diffs = [abs(a - b) for a, b in pairs]
         ids = [t for t, _ in toks[k:k + WIN]]
-        runs = Counter(tuple(ids[j:j + 16]) for j in range(len(ids) - 16))
-        out.append((k, sum(diffs) / len(diffs), 1000 * sum(x > 1 for x in diffs) / len(diffs), max(runs.values())))
+        out.append((k, sum(diffs) / len(diffs), 1000 * sum(x > 1 for x in diffs) / len(diffs), longest_loop(ids)))
     return out
 
 
@@ -91,8 +107,8 @@ def verdict(per_reply):
             bad.append(f"reply {n}: late windows {ratio:.2f}x the first two")
         if max(x[1] for x in w) > 0.40:
             bad.append(f"reply {n}: a window at {max(x[1] for x in w):.3f} mean |diff|")
-        if max(x[3] for x in w) > 8:
-            bad.append(f"reply {n}: a 16-token run repeated {max(x[3] for x in w)} times")
+        if max(x[3] for x in w) >= LOOP:
+            bad.append(f"reply {n}: a block repeated back to back for {max(x[3] for x in w)} tokens (a loop)")
     return ("FAIL", bad) if bad else ("PASS", [])
 
 
@@ -103,8 +119,20 @@ def selftest():
     assert verdict([clean, clean]) == ("PASS", [])
     assert verdict([clean, grows])[0] == "FAIL"
     assert verdict([w(0.2, 0.5, 0.2, 0.2)])[0] == "FAIL"                     # one window past 0.40
-    assert verdict([[(0, 0.1, 0, 30), (2000, 0.1, 0, 1)]])[0] == "FAIL"      # a loop
+    assert verdict([[(0, 0.1, 0, 300), (2000, 0.1, 0, 1)]])[0] == "FAIL"     # a loop
     assert verdict([w(0.1)])[0] == "INCONCLUSIVE"                            # 2,000 tokens only
+    assert verdict([w(0.30, 0.29, 0.06, 0.05, 0.07, 0.12, 0.05, 0.06)]) == ("PASS", [])  # high first, falls (main)
+    # Matt's false FAIL (2026-10-12): a 16-token run 9 times in a window, apart (code boilerplate): now passes.
+    run, filler = list(range(1000, 1016)), lambda k: list(range(5000 + 150 * k, 5150 + 150 * k))
+    ids = [t for k in range(9) for t in run + filler(k)] + list(range(9000, 9000 + 2000 - 9 * 166))
+    toks = [(t, -0.5) for t in ids] * 2
+    assert len(toks) == 4000 and windows(toks, [-0.6] * 4000)[0][3] < LOOP
+    assert verdict([windows(toks, [-0.6] * 4000)]) == ("PASS", [])
+    # A real loop: one 20-token block back to back 15 times (280 tokens) in otherwise varied text: fails.
+    looped = list(range(20000, 21000)) + list(range(100, 120)) * 15 + list(range(30000, 30700))
+    assert len(looped) == 2000 and longest_loop(looped) == 280
+    toks = [(t, -0.5) for t in looped + list(range(40000, 42000))]
+    assert verdict([windows(toks, [-0.6] * 4000)])[0] == "FAIL"
     print("selftest ok")
 
 
@@ -120,6 +148,6 @@ if __name__ == "__main__":
         per_reply.append(w)
         print(f"reply {o['i']}: {len(o['tokens'])} tokens in {o['secs']} s, finish {o['finish']}")
         for k, d, n, rep in w:
-            print(f"  {k:5d}+  mean |diff| {d:.3f}   > 1 nat {n:3.0f}/1k   top 16-token repeat x{rep}")
+            print(f"  {k:5d}+  mean |diff| {d:.3f}   > 1 nat {n:3.0f}/1k   longest back-to-back repeat {rep} tokens")
     v, why = verdict(per_reply)
     print(v + ("" if not why else ": " + "; ".join(why)))
