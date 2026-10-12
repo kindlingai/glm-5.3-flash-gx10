@@ -14,7 +14,8 @@ image-level patches that the vLLM version string cannot see. A snapshot is used
 only when its key matches exactly and it covers every tensor of the model;
 otherwise the rank loads normally and writes a new one. Names start with
 SNAPSHOT_VERSION, and opening the directory deletes snapshots of any other
-version.
+version. The manifest also records a fingerprint of the checkpoint's tensor
+bytes (#62): a snapshot written from other bytes is a miss (see complete()).
 """
 import hashlib
 import json
@@ -33,8 +34,7 @@ logger = init_logger(__name__)
 
 # Bump when a change to weight processing or to this file's format makes
 # existing snapshots wrong in a way the key cannot see.
-# 3: the key samples checkpoint tensor bytes (issue #62).
-SNAPSHOT_VERSION = 3
+SNAPSHOT_VERSION = 2
 # A snapshot or a partly written one, of any version (version 1 had no prefix).
 _SNAPSHOT_NAME = re.compile(r"(v\d+-)?(target|draft)-tp\d+of\d+-dp\d+-[0-9a-f]{16}(\.tmp\d+)?")
 
@@ -81,9 +81,13 @@ def _dtype(name: str) -> torch.dtype:
 
 
 class Snapshot:
-    def __init__(self, path: str, key: dict):
+    def __init__(self, path: str, key: dict, content: str | None = None, role: str = "target"):
         self.path = path
         self.key = key
+        # Not in the key: a new field there would rename, and so rewrite, every
+        # existing snapshot. complete() compares it with the manifest instead.
+        self.content = content
+        self.role = role
 
     # ---- key ----------------------------------------------------------------
 
@@ -118,7 +122,6 @@ class Snapshot:
             )
         )
         key["tag"] = os.environ.get("VLLM_WEIGHT_SNAPSHOT_TAG", "")
-        key["content"] = _content_fingerprint(model_config.model)
         # The indexer's top-k scratch buffer has one row per batched token.
         key["max_num_batched_tokens"] = vllm_config.scheduler_config.max_num_batched_tokens
         # The MoE backend decides the processed expert layout (marlin repacks
@@ -129,10 +132,48 @@ class Snapshot:
         role = "draft" if is_draft else "target"
         name = f"v{SNAPSHOT_VERSION}-{role}-tp{key['tp_rank']}of{key['tp_size']}-dp{key['dp_rank']}-{digest}"
         _remove_other_versions(base)
-        return cls(os.path.join(base, name), key)
+        return cls(os.path.join(base, name), key, _content_fingerprint(model_config.model), role)
 
     def complete(self) -> bool:
-        return os.path.isfile(os.path.join(self.path, "COMPLETE"))
+        """A finished snapshot of these checkpoint bytes.
+
+        The key covers the shard headers. The manifest also holds a fingerprint
+        of the tensor bytes, so a same-shape checkpoint update (#62) is a miss
+        here: the rank loads normally and rewrites this one snapshot. A snapshot
+        written before the field existed: a draft one is a miss (where #62
+        happened; about 1.4 GiB a rank to rewrite), a target one is accepted and
+        gets the field, so nothing large is rewritten. A target checkpoint
+        changed in place before that boot goes unseen: delete its snapshots.
+        """
+        if not os.path.isfile(os.path.join(self.path, "COMPLETE")):
+            return False
+        if self.content is None:  # not a local directory: nothing to compare, as with vLLM's hash
+            return True
+        mpath = os.path.join(self.path, "manifest.json")
+        try:
+            with open(mpath) as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            return False
+        have = manifest.get("content")
+        if have == self.content:
+            return True
+        if have is not None:
+            logger.info("Weight snapshot: %s holds other checkpoint bytes; loading normally and rewriting it", self.path)
+            return False
+        if self.role == "draft":
+            logger.info("Weight snapshot: %s predates content fingerprints; rewriting this draft snapshot once", self.path)
+            return False
+        manifest["content"] = self.content
+        tmp = mpath + f".tmp{os.getpid()}"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(manifest, f)
+            os.replace(tmp, mpath)
+            logger.info("Weight snapshot: recorded the content fingerprint in %s", mpath)
+        except OSError as e:
+            logger.warning("Weight snapshot: could not record the content fingerprint in %s: %s", mpath, e)
+        return True
 
     # ---- save ---------------------------------------------------------------
 
@@ -166,7 +207,7 @@ class Snapshot:
                 entries.append({"path": path, "dtype": str(t.dtype), "shape": list(t.shape),
                                 "offset": offset, "nbytes": nbytes})
                 offset += nbytes + pad
-        manifest = {"key": self.key, "entries": entries, "aliases": aliases,
+        manifest = {"key": self.key, "content": self.content, "entries": entries, "aliases": aliases,
                     "module_attrs": _module_flags(model), "bytes": offset}
         with open(os.path.join(tmp, "manifest.json"), "w") as f:
             json.dump(manifest, f)

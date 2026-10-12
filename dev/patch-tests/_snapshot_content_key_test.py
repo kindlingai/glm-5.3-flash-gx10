@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""experimental/snapshot/weight_snapshot.py: the snapshot key sees tensor bytes (#62).
+"""experimental/snapshot/weight_snapshot.py: a snapshot of other checkpoint bytes is a miss (#62).
 
 Writes small safetensors shards and checks _content_fingerprint:
   - two checkpoints with byte-identical headers but different tensor data
@@ -8,6 +8,13 @@ Writes small safetensors shards and checks _content_fingerprint:
     re-mounted checkpoint still restores)
   - a change at the start, middle or end of the data is seen
   - a repo id that is not a directory, or a directory without shards, is None
+and Snapshot.complete(), with the fingerprint kept in the manifest, not the key:
+  - a matching fingerprint restores; a different one is a miss (rewritten by the loader)
+  - a snapshot without the field (written before it existed): a draft one is a miss,
+    a target one is accepted and gets the field, the rest of its manifest unchanged
+  - no COMPLETE, an unreadable manifest: a miss; no local checkpoint (None): restores
+  - SNAPSHOT_VERSION is still 2 and the key has no content field, so no existing
+    snapshot is renamed or deleted
 CPU only, no vLLM needed (vllm.logger is stubbed when absent):
 
     python3 dev/patch-tests/_snapshot_content_key_test.py
@@ -80,6 +87,36 @@ with tempfile.TemporaryDirectory() as root:
     check("repo id -> None", m._content_fingerprint("zai-org/GLM-5.3-Flash") is None)
     os.makedirs(os.path.join(root, "empty"))
     check("no shards -> None", m._content_fingerprint(os.path.join(root, "empty")) is None)
+
+def snap(root, sub, content, role, manifest=None, complete=True):
+    d = os.path.join(root, sub)
+    os.makedirs(d)
+    if complete:
+        open(os.path.join(d, "COMPLETE"), "w").close()
+    if manifest is not None:
+        with open(os.path.join(d, "manifest.json"), "w") as f:
+            f.write(manifest if isinstance(manifest, str) else json.dumps(manifest))
+    return m.Snapshot(d, {"k": 1}, content, role)
+
+
+with tempfile.TemporaryDirectory() as root:
+    old_manifest = {"key": {"k": 1}, "entries": [{"path": "w"}], "aliases": {}, "bytes": 4096}
+    check("version stays 2 (no rename of existing snapshots)", m.SNAPSHOT_VERSION == 2)
+    check("matching fingerprint -> restore",
+          snap(root, "a", "f1", "target", dict(old_manifest, content="f1")).complete())
+    check("other fingerprint -> miss", not snap(root, "b", "f2", "target", dict(old_manifest, content="f1")).complete())
+    check("draft, no field -> miss", not snap(root, "c", "f1", "draft", old_manifest).complete())
+    with open(os.path.join(root, "c", "manifest.json")) as f:
+        check("draft miss leaves its manifest alone", "content" not in json.load(f))
+    check("target, no field -> restore", snap(root, "d", "f1", "target", old_manifest).complete())
+    with open(os.path.join(root, "d", "manifest.json")) as f:
+        back = json.load(f)
+    check("target gets the field, nothing else changes",
+          back.get("content") == "f1" and {k: v for k, v in back.items() if k != "content"} == old_manifest)
+    check("backfilled target restores next boot", m.Snapshot(os.path.join(root, "d"), {"k": 1}, "f1", "target").complete())
+    check("no COMPLETE -> miss", not snap(root, "e", "f1", "target", old_manifest, complete=False).complete())
+    check("unreadable manifest -> miss", not snap(root, "f", "f1", "target", "{not json").complete())
+    check("no local checkpoint (None) -> restore", snap(root, "g", None, "draft", old_manifest).complete())
 
 print(f"{failures} failure(s)")
 sys.exit(1 if failures else 0)
