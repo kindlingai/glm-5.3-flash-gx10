@@ -70,13 +70,16 @@ rounding changes, and borderline answers flip. HumanEval has about a dozen
 problems that pass or fail from boot to boot, and
 `experimental/quality/he_detail.py` shows which ones flipped between runs. GSM8K runs 8 requests at once, so
 batching changes run to run too: the same config on the same boot has scored
-96.4 and then 98.4.
+96.4 and then 98.4. So does HumanEval, for the same reason: on 2026-10-16 one
+boot scored 152 inside a full gate and 154 on a re-run minutes later, and the
+next boot of the same code scored 157.
 
 So one number near an edge proves nothing. A real regression either falls well
 outside a bar or moves several checks together. The last one I caught (NVFP4
 for the attention projections) took GSM8K to 95.6 and HumanEval to 154 at
 once. When you're unsure, compare the two paths inside one boot, where
-generated text is byte for byte deterministic.
+generated text is byte for byte deterministic — for one stream at a time. Under
+concurrency it is not, which is why the two checks above move within a boot.
 
 NLL isn't. `nll-ref.json` was recorded with the dense layers left in bf16
 (`fp8.yaml` left out), and FP8 dense moved the notes text up by about 0.015.
@@ -94,6 +97,14 @@ the same way. To add a text, drop it in `gate/texts/`, boot without
 | Decode, older prompt set | `gate/decode_stream.py` | median of 3 |
 | Concurrent streams 1 to 16, mixed prompts | `gate/conc.py` | 1 |
 | Preemptions | `/metrics` | must stay 0 |
+
+`gate/decode.py` runs straight after the needle sweep and the cold prefills,
+and the adaptive draft-length estimator is still carrying those steps when it
+starts. On 2026-10-16 it read structured 152.6 at 84.0% acceptance there, with
+samples 150.8, 152.6 and 171.4; three re-runs on that same boot gave 170.4,
+172.1 and 171.9 at 97.3%, and the next boot gave 172.1. A low decode number
+inside a full gate wants a re-run before it means anything, and
+`decode_stream.py` and RigMark, which run later, are the cross-check.
 
 Par means within the noise of the last full gate: about 0.5% for prefill and
 1 to 2% for decode. Anything lower is a loss, even if it's small. I would
