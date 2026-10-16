@@ -30,8 +30,8 @@ has the details.
 | prefill @32k, cold | 2,931 tok/s | 3,864 tok/s | 4,934 tok/s | 4,907 tok/s |
 | prefill @128k, cold | 2,871 tok/s | 3,736 tok/s | 4,776 tok/s | 4,731 tok/s |
 | decode\*, code / prose / structured | 66.2 / 42.6 / 94.7 tok/s | 88.0 / 54.2 / 121.4 tok/s | 117.3 / 70.5 / 164.3 tok/s | – |
-| mixed\*, 4 / 8 streams, aggregate | 83 / 110 tok/s | 107 / 138 tok/s | 144 / 194 tok/s | – |
-| KV pool (fp8_e4m3) | 1.10M tokens, 8 GiB pin | 1.91M tokens, 12 GiB pin | 4.40M tokens, 26 GiB pin | 4.47M tokens, 26 GiB pin |
+| mixed\*, 4 / 8 streams, aggregate | 89 / 116 tok/s | 113 / 146 tok/s | 148 / 199 tok/s | – |
+| KV pool (fp8_e4m3) | 1.38M tokens, 8 + 2 GiB | 2.24M tokens, 12 + 2 GiB | 5.08M tokens, 26 + 2 GiB | 4.47M tokens, 26 GiB, no dispram |
 | longest request | 160k tokens | 524k tokens | 524k tokens | 524k tokens |
 | requests decoding at once | 16 | 64 | 64 | 64 |
 | boot, once snapshots exist | ~3 min | ~3 min | ~3 min | not measured |
@@ -39,7 +39,14 @@ has the details.
 
 \* modified rigmark-like approach, see [gate/bench](gate/bench/).
 
-Prefill is cold: random words, nothing cached.
+Prefill is cold: random words, nothing cached. The KV pool is two numbers
+because two things size it: the pin the entrypoint sets, plus the 2 GiB
+`dispram` lends from the GB10's display carveout on kindling-spark-os. Without
+dispram the pool is the pin alone, about 1.10M, 1.91M and 4.40M tokens.
+
+The KV pool and mixed-stream rows were remeasured on 2026-10-16 (main `ba8d402`,
+one boot a config: TP=2 on two boxes, TP=3 on three). The other rows are the
+earlier measurements, which tonight's runs reproduced inside their intervals.
 
 We measured TP=2, 3 and 4 on boots that restored weight snapshots. TP=4 prefill
 is the median of four such boots. The first boot, which loads the checkpoint
