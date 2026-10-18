@@ -15,4 +15,4 @@ services:
       - VLLM_ARXBIG_AG=${VLLM_ARXBIG_AG:-0}
       # Decode all-reduces above 256 KB and up to this size run arx's two-shot mode
       # (reduce-scatter + all-gather over RDMA); 0 sends them to NCCL.
-      - VLLM_ARX_TWO_SHOT_MAX_KB=${VLLM_ARX_TWO_SHOT_MAX_KB:-2048}
+      - VLLM_ARX_TWO_SHOT_MAX_KB=${VLLM_ARX_TWO_SHOT_MAX_KB:-16384}

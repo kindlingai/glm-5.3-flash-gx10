@@ -96,8 +96,8 @@
 constexpr int kMaxWorld = 8;
 constexpr int kMaxDev = 4;  // ring mode: 2 ports x 2 roots
 constexpr size_t kMaxBytes = 512 << 10;  // one-shot partial: bf16 [32, 4096] is 256 KB
-constexpr size_t kSendBytes = 4 << 20;   // per parity: a two-shot partial
-constexpr size_t kSlotBytes = 1 << 20;   // per peer per parity: a one-shot partial or a two-shot chunk
+constexpr size_t kSendBytes = 16 << 20;  // per parity: a two-shot partial (16 MB; arxbench W=4: 16 MB 1,029 us ~0.99x egress floor, ~2x NCCL)
+constexpr size_t kSlotBytes = 4 << 20;   // per peer per parity: a one-shot partial or a two-shot chunk
 enum : uint64_t { kFull = 0, kScatter = 1, kGather = 2 };
 // Ctl::err, set by the proxy before it exits.
 enum : uint64_t { kErrPost = 1, kErrCompletion = 2, kErrInjected = 3 };
@@ -771,9 +771,9 @@ void arx_allreduce2(torch::Tensor in, torch::Tensor out) {
   auto mid = torch::empty({chunk}, in.options());
   const int threads = 256;
   auto stream = at::cuda::getCurrentCUDAStream();
-  arx_scatter_kernel<<<std::max(1, std::min(8, chunk / (threads * 8))), threads, 0, stream>>>(
+  arx_scatter_kernel<<<std::max(1, std::min(64, chunk / (threads * 8 * 8))), threads, 0, stream>>>(
       S.dev, (const __nv_bfloat16*)in.data_ptr(), (__nv_bfloat16*)mid.data_ptr(), n);
-  arx_gather_kernel<<<std::max(1, std::min(8, n / (threads * 8))), threads, 0, stream>>>(
+  arx_gather_kernel<<<std::max(1, std::min(64, n / (threads * 8 * 8))), threads, 0, stream>>>(
       S.dev, (const __nv_bfloat16*)mid.data_ptr(), (__nv_bfloat16*)out.data_ptr(), chunk);
 }
 
