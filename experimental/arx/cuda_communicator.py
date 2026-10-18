@@ -359,7 +359,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
         if arx_comm is None or arx_comm.disabled or not arx_comm.should_use(input_):
             return None
         chunk = input_.shape[0] // self.world_size
-        return arx_comm.all_reduce(input_)[self.rank_in_group * chunk:(self.rank_in_group + 1) * chunk]
+        return arx_comm.all_reduce_auto(input_)[self.rank_in_group * chunk:(self.rank_in_group + 1) * chunk]
 
     def _arx_all_gather(self, input_):
         # arxbig's gather lands in pinned memory, and the GEMMs that read it
@@ -378,10 +378,13 @@ class CudaCommunicator(DeviceCommunicatorBase):
             return None
         chunk = input_.shape[0]
         full[self.rank_in_group * chunk:(self.rank_in_group + 1) * chunk] = input_
-        return arx_comm.all_reduce(full)
+        return arx_comm.all_reduce_auto(full)
 
     def all_reduce(self, input_):
         arx_comm = self.arx_comm
+        # Site path first (decode sizes, lamport arrival); then the parity path; then the others.
+        if arx_comm is not None and not arx_comm.disabled and arx_comm.site_ok(input_):
+            return arx_comm.all_reduce_site(input_)
         if arx_comm is not None and not arx_comm.disabled and arx_comm.should_use(input_, two_shot=True):
             return arx_comm.all_reduce(input_)
         fi_ar_comm = self.fi_ar_comm
