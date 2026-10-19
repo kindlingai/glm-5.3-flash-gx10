@@ -68,7 +68,7 @@
 // proxy, then allreduce(in, out) runs on the current stream and is
 // CUDA-graph capturable. in/out are bf16 device tensors.
 //
-// Site path (VLLM_ARX_SITE_MAX, default 64 KB, mesh only): decode-sized all-reduces
+// Site path (VLLM_ARX_SITE_MAX, default 0 = off, mesh only): decode-sized all-reduces
 // use one pinned send slot and one receive slot per peer per *site* (the position
 // of the all-reduce in the step, numbered from begin_step()) instead of the two
 // parity slots, so a producer kernel can write its output straight into the slot

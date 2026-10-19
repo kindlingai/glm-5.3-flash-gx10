@@ -6,6 +6,8 @@ services:
     volumes:
       - ../experimental/arx/arx.py:/usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/arx.py:ro
       - ../experimental/arx/arx_vllm.cu:/usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/arx_vllm.cu:ro
+      # arx_vllm.cu includes arx_site.h; without it a cold JIT build fails.
+      - ../experimental/arx/arx_site.h:/usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/arx_site.h:ro
       - ../experimental/arx/arxbig.cu:/usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/arxbig.cu:ro
       - ../experimental/arx/cuda_communicator.py:/usr/local/lib/python3.12/dist-packages/vllm/distributed/device_communicators/cuda_communicator.py:ro
     environment:
@@ -14,5 +16,6 @@ services:
       - VLLM_ARXBIG_RS=${VLLM_ARXBIG_RS:-1}
       - VLLM_ARXBIG_AG=${VLLM_ARXBIG_AG:-0}
       # Decode all-reduces above 256 KB and up to this size run arx's two-shot mode
-      # (reduce-scatter + all-gather over RDMA); 0 sends them to NCCL.
-      - VLLM_ARX_TWO_SHOT_MAX_KB=${VLLM_ARX_TWO_SHOT_MAX_KB:-16384}
+      # (reduce-scatter + all-gather over RDMA); 0 sends them to NCCL. The kernel takes up
+      # to 16384; at TP=4 that measured the same as 2048 and is not bit-exact with it.
+      - VLLM_ARX_TWO_SHOT_MAX_KB=${VLLM_ARX_TWO_SHOT_MAX_KB:-2048}
