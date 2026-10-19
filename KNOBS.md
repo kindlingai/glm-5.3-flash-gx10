@@ -79,7 +79,7 @@ Meaning and rationale stay in the entrypoint and compose comments.
 | `TORCH_MEM_FRACTION` | `0.92` |
 | `TP` | `4` (or `2`, `3`, `RING4`) |
 | `TRITON_CACHE_DIR` | `${CACHE_ROOT}/${SHARED_TAG}/triton` _(derived)_ |
-| `VLLM_ARX_TWO_SHOT_MAX_KB` | `2048` (with arx.yaml; `0` sends all-reduces over 256 KB to NCCL; NCCL is faster at 4 MB) |
+| `VLLM_ARX_TWO_SHOT_MAX_KB` | `2048` (with arx.yaml; `0` sends all-reduces over 256 KB to NCCL; up to `16384`, which measured the same at TP=4) |
 | `VLLM_DRAFT_TRUNC_EXPLORE` | `4` (with adaptive-k.yaml; every Nth step skips the draft cut, and only those steps train the estimator) |
 | `VLLM_DRAFT_TRUNC_TAU` | `0.3` (with adaptive-k.yaml; `0` turns the draft cut off) |
 | `VLLM_ENGINE_READY_TIMEOUT_S` | `3600` |

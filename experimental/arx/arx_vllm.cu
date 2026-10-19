@@ -67,6 +67,23 @@
 // all-gathers them over its own group, connect() wires the QPs and starts the
 // proxy, then allreduce(in, out) runs on the current stream and is
 // CUDA-graph capturable. in/out are bf16 device tensors.
+//
+// Site path (VLLM_ARX_SITE_MAX, default 0 = off, mesh only): decode-sized all-reduces
+// use one pinned send slot and one receive slot per peer per *site* (the position
+// of the all-reduce in the step, numbered from begin_step()) instead of the two
+// parity slots, so a producer kernel can write its output straight into the slot
+// at a pointer that is fixed at CUDA-graph capture, and arrival is lamport
+// (arx_site.h): receive slots hold a bf16 sentinel, every thread polls its own 16
+// bytes, no flag write, no block-0 barrier. Reuse: site s of step t+1 is written
+// only after this rank finished site s+1 of step t, which needed every peer's site
+// s+1 data, which they published after finishing site s, which needed our site s
+// bytes to have landed; so the NIC had read send[s]. The receiver re-sentinels
+// recv[s][src] while consuming it; a peer rewrites it at step t+1 only after
+// finishing its site s-1 of step t+1, which needed our step t+1 site s-1 data,
+// published after our step t completed. Needs two or more sites per step.
+// Measured on four GX10s over the CRS812 (arxbench, 2026-10-18): 4 KB 13 -> 6.4 us,
+// 64 KB 27 -> 11 us with a publishing producer, 19 us with a producer that only
+// writes the slot, 25 us in copy mode (what this pass ships).
 #include <cmath>
 #include <arpa/inet.h>
 #include <cuda_bf16.h>
@@ -90,14 +107,18 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/extension.h>
 
+#include "arx_site.h"
+
 #define CK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) { fprintf(stderr, "%s:%d %s\n", __FILE__, __LINE__, cudaGetErrorString(e_)); exit(1); } } while (0)
 #define IBCK(x) do { if (!(x)) { fprintf(stderr, "%s:%d %s failed: %s\n", __FILE__, __LINE__, #x, strerror(errno)); exit(1); } } while (0)
 
 constexpr int kMaxWorld = 8;
 constexpr int kMaxDev = 4;  // ring mode: 2 ports x 2 roots
 constexpr size_t kMaxBytes = 512 << 10;  // one-shot partial: bf16 [32, 4096] is 256 KB
-constexpr size_t kSendBytes = 4 << 20;   // per parity: a two-shot partial
-constexpr size_t kSlotBytes = 1 << 20;   // per peer per parity: a one-shot partial or a two-shot chunk
+constexpr size_t kSendBytes = 16 << 20;  // per parity: a two-shot partial (16 MB; arxbench 2026-10-18: 16 MB 1,029 us ~0.99x floor, 2x NCCL)
+constexpr size_t kSlotBytes = 4 << 20;   // per peer per parity: a one-shot partial or a two-shot chunk
+using arx_site::kSites;                  // site path: slots per step, bytes per slot (arx_site.h)
+using arx_site::kSiteBytes;
 enum : uint64_t { kFull = 0, kScatter = 1, kGather = 2 };
 // Ctl::err, set by the proxy before it exits.
 enum : uint64_t { kErrPost = 1, kErrCompletion = 2, kErrInjected = 3 };
@@ -116,6 +137,7 @@ struct Ctl {                   // pinned; written by the GPU, read by the proxy
   volatile uint64_t done;      // last seq the GPU finished summing (for the watchdog)
   volatile uint64_t err;       // written by the proxy: why it stopped (kErr*), 0 while it runs
   volatile uint64_t gpu_err;   // written by the GPU: why it trapped (kGpu*)
+  arx_site::Work sring[arx_site::kRing];  // site publishes, consumed in order by the proxy
 };
 
 struct PeerInfo {  // what rank r tells everyone about its QPs
@@ -124,6 +146,8 @@ struct PeerInfo {  // what rank r tells everyone about its QPs
   uint32_t mtu[kMaxDev];       // per device: the port's active MTU (enum ibv_mtu)
   uint64_t recv_addr, flag_addr;
   uint32_t recv_rkey[kMaxDev], flag_rkey[kMaxDev];
+  uint64_t srecv_addr;         // site receive slots [kSites][world][kSiteBytes]
+  uint32_t srecv_rkey[kMaxDev];
   uint64_t seq_start;          // ARX_SEQ_START: every rank must start at the same seq
 };
 
@@ -157,6 +181,10 @@ struct Dev {
   unsigned long long* go;        // device: seq whose peer data has all arrived
   int rank, world;
   uint64_t spin_ns;              // spin-wait deadline, 0 = wait forever
+  uint8_t* ssend;                // site path: [kSites][kSiteBytes]
+  uint8_t* srecv;                // site path: [kSites][world][kSiteBytes], sentinel-filled
+  unsigned long long* swork_next;  // device: next site publish index
+  unsigned* scnt;                // device: site kernel's copy-mode block counter
 #ifdef ARX_TEST_HOOKS
   long long slow_copy_ns;        // two-shot copy block 1 sleeps this long first (test_ring.py --slow-copy-us)
 #endif
@@ -386,6 +414,81 @@ __global__ void arx_gather_kernel(Dev d, const __nv_bfloat16* __restrict__ chunk
   finish(d, seq);
 }
 
+// Site path (see the header comment). producer 0: copy in -> this site's send slot,
+// canonicalised, and the last block publishes the whole slot. 1: a producer already
+// wrote the slot; block 0 publishes on entry. 2: the producer published through
+// arx_site.h; nothing to send. Then every thread polls its own 16 bytes in every
+// peer's slot for this site until no lane is the sentinel, puts the sentinel back,
+// and sums the W partials in fp32 in rank order, rounded once: the same bits on
+// every rank, and the same arithmetic as arx_kernel. No seq, no flag, no go word.
+__global__ void arx_site_kernel(Dev d, int site, const __nv_bfloat16* __restrict__ in, __nv_bfloat16* out, int n,
+                                int producer, Prefetch pf) {
+  const int W = d.world, me = d.rank;
+  uint8_t* mine_b = d.ssend + (size_t)site * kSiteBytes;
+  const uint64_t bytes = (uint64_t)n * 2, stride = (uint64_t)gridDim.x * blockDim.x * 16;
+  if (producer == 0) {
+    for (uint64_t i = ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) * 16; i < bytes; i += stride)
+      *reinterpret_cast<uint4*>(mine_b + i) =
+          arx_site::canon(*reinterpret_cast<const uint4*>(reinterpret_cast<const uint8_t*>(in) + i));
+    __threadfence_system();
+    __syncthreads();
+    if (threadIdx.x == 0 && atomicAdd(d.scnt, 1u) == gridDim.x - 1) {  // last block publishes
+      *d.scnt = 0;
+      arx_site::publish(d.ctl->sring, d.swork_next, (uint64_t)site, 0, bytes);
+    }
+  } else if (producer == 1 && blockIdx.x == 0 && threadIdx.x == 0) {
+    arx_site::publish(d.ctl->sring, d.swork_next, (uint64_t)site, 0, bytes);
+  }
+  // DRAM is idle while the peers' data is in flight (as arx_kernel).
+  if (pf.count > 0) {
+    const long long nthr = (long long)gridDim.x * blockDim.x, t = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    for (int r = 0; r < pf.count; ++r) {
+      const long long chunk = ((pf.bytes[r] + nthr - 1) / nthr + 15) & ~15LL, off = t * chunk;
+      const long long len = min(chunk, pf.bytes[r] - off) & ~15LL;
+      if (len > 0)
+        asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;\n" ::"l"(pf.ptr[r] + off), "r"((unsigned)len));
+    }
+  }
+  unsigned spins = 0;
+  uint64_t t0 = 0;
+  for (uint64_t i = ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) * 16; i < bytes; i += stride) {
+    uint4 v[kMaxWorld];
+    // Every load first, so the W-1 polls overlap; unrolled with a guard so v[] stays in registers.
+#pragma unroll
+    for (int s = 0; s < kMaxWorld; ++s)
+      if (s < W)
+        v[s] = s == me ? *reinterpret_cast<const uint4*>(mine_b + i)
+                       : ld_cv(d.srecv + ((size_t)site * W + s) * kSiteBytes + i);
+    for (bool again = true; again;) {
+      again = false;
+#pragma unroll
+      for (int s = 0; s < kMaxWorld; ++s)
+        if (s < W && s != me && arx_site::has_sentinel(v[s])) {
+          again = true;
+          v[s] = ld_cv(d.srecv + ((size_t)site * W + s) * kSiteBytes + i);
+        }
+      if (again)
+        spin_tick(d, spins, t0, (uint64_t)site, "site data (a producer emitting bf16 0xFFFF never clears the sentinel)", 0, 0);
+    }
+#pragma unroll
+    for (int s = 0; s < kMaxWorld; ++s)  // the sentinel back, for the next step's write into this slot
+      if (s < W && s != me)
+        *reinterpret_cast<uint4*>(d.srecv + ((size_t)site * W + s) * kSiteBytes + i) = make_uint4(~0u, ~0u, ~0u, ~0u);
+    float acc[8] = {};
+#pragma unroll
+    for (int s = 0; s < kMaxWorld; ++s)  // rank order: every rank gets the same bits
+      if (s < W) {
+        const __nv_bfloat16* b = reinterpret_cast<const __nv_bfloat16*>(&v[s]);
+#pragma unroll
+        for (int k = 0; k < 8; ++k) acc[k] += __bfloat162float(b[k]);
+      }
+    __align__(16) __nv_bfloat16 o[8];
+#pragma unroll
+    for (int k = 0; k < 8; ++k) o[k] = __float2bfloat16(acc[k]);
+    *reinterpret_cast<uint4*>(reinterpret_cast<uint8_t*>(out) + i) = *reinterpret_cast<const uint4*>(o);
+  }
+}
+
 // ---- host side ---------------------------------------------------------------
 
 namespace {
@@ -398,11 +501,13 @@ struct State {
   int prev = 0, next = 0;
   int gid_idx[kMaxDev] = {};
   uint8_t *send_h = nullptr, *recv_h = nullptr;
+  uint8_t *ssend_h = nullptr, *srecv_h = nullptr;  // site path slots
   uint64_t* flag_h = nullptr;
   Ctl* ctl = nullptr;
   ibv_context* ctx[kMaxDev] = {};
   ibv_pd* pd[kMaxDev] = {};
   ibv_mr *send_mr[kMaxDev] = {}, *recv_mr[kMaxDev] = {}, *flag_mr[kMaxDev] = {};
+  ibv_mr *ssend_mr[kMaxDev] = {}, *srecv_mr[kMaxDev] = {};
   ibv_cq* cq[kMaxDev] = {};
   ibv_qp* qp[kMaxWorld][2] = {};
   PeerInfo mine{};
@@ -511,11 +616,48 @@ bool poll_cqs() {
   return true;
 }
 
+// Site publishes: data only (no flag), split in half across the two roots, to
+// every peer in staggered order, into the peer's receive slot for this site and
+// this rank. Mesh only (channel c is rank c, device r is root r). Returns the
+// number of publishes served, -1 on a failed post. Shares the per-QP signalled
+// counters with the parity path so the every-32 reclaim stays right.
+int serve_sites(uint64_t& sdone, uint64_t (&posted)[kMaxWorld][2]) {
+  int served = 0;
+  for (;;) {
+    arx_site::Work& w = S.ctl->sring[sdone % arx_site::kRing];
+    if (w.tag != sdone + 1) return served;
+    std::atomic_thread_fence(std::memory_order_acquire);
+    const uint64_t site = w.site, lo = w.lo, hi = w.hi;
+    ++sdone; ++served;
+    const uint32_t len = (uint32_t)(hi - lo), half = (len / 2 + 15) & ~15u;
+    for (int step = 1; step < S.world; ++step) {
+      const int c = (S.rank + step) % S.world;
+      const PeerInfo& p = S.all[c];
+      for (int r = 0; r < 2; ++r) {
+        const uint32_t off = r ? half : 0, n = r ? len - half : half;
+        if (!n) continue;
+        ibv_sge sg{(uint64_t)S.ssend_h + site * kSiteBytes + lo + off, n, S.ssend_mr[r]->lkey};
+        ibv_send_wr wr{}, *bad;
+        wr.opcode = IBV_WR_RDMA_WRITE; wr.sg_list = &sg; wr.num_sge = 1;
+        wr.wr.rdma.remote_addr = p.srecv_addr + (site * S.world + S.rank) * kSiteBytes + lo + off;
+        wr.wr.rdma.rkey = p.srecv_rkey[r];
+        if ((++posted[c][r] & 31) == 0) wr.send_flags |= IBV_SEND_SIGNALED;
+        if (int e = ibv_post_send(S.qp[c][r], &wr, &bad)) {
+          fprintf(stderr, "arx rank %d: site %lu post to %d root %d failed: %s\n", S.rank, (unsigned long)site, c, r,
+                  strerror(e));
+          return -1;
+        }
+      }
+    }
+  }
+}
+
 void proxy_loop() {
   // Every counter starts at ARX_SEQ_START, as seq_dev and Ctl::seq do: the
   // proxy posts ctl->seq's successors in order.
   const uint64_t start = S.seq_start;
   uint64_t seq = start, posted[kMaxWorld][2] = {};
+  uint64_t sdone = 0;  // site publishes served
   const int rank = S.rank, world = S.world;
   auto last_move = std::chrono::steady_clock::now();
   uint64_t last_done = start;
@@ -527,6 +669,11 @@ void proxy_loop() {
   const volatile uint64_t* flags = S.flag_h;
   IdleNap nap;
   while (!S.ctl->stop) {
+    if (!S.ring) {
+      const int ns = serve_sites(sdone, posted);
+      if (ns < 0) { proxy_fail(kErrPost, "site post failed"); return; }
+      if (ns > 0) nap.busy();
+    }
     for (int r = 0; relay && r < 2; ++r)
       while (relayed[r] < seq && flags[S.prev * 2 + r] > relayed[r]) {
         std::atomic_thread_fence(std::memory_order_acquire);
@@ -636,6 +783,11 @@ py::bytes arx_prepare(int64_t rank, int64_t world, std::vector<std::string> devs
   CK(cudaHostAlloc(&S.recv_h, 2 * world * kSlotBytes, cudaHostAllocMapped));
   CK(cudaHostAlloc(&S.flag_h, 2 * kMaxWorld * sizeof(uint64_t), cudaHostAllocMapped));
   CK(cudaHostAlloc(&S.ctl, sizeof(Ctl), cudaHostAllocMapped));
+  // Site path: send slots zero, receive slots all-ones (the lamport sentinel in every bf16 lane).
+  CK(cudaHostAlloc(&S.ssend_h, (size_t)kSites * kSiteBytes, cudaHostAllocMapped));
+  CK(cudaHostAlloc(&S.srecv_h, (size_t)kSites * world * kSiteBytes, cudaHostAllocMapped));
+  memset(S.ssend_h, 0, (size_t)kSites * kSiteBytes);
+  memset(S.srecv_h, 0xFF, (size_t)kSites * world * kSiteBytes);
   // Peer flags start at 0, below every seq from seq_start + 1 on.
   memset(S.flag_h, 0, 2 * kMaxWorld * sizeof(uint64_t));
   memset((void*)S.ctl, 0, sizeof(Ctl));
@@ -654,6 +806,8 @@ py::bytes arx_prepare(int64_t rank, int64_t world, std::vector<std::string> devs
     S.send_mr[d] = ibv_reg_mr(S.pd[d], S.send_h, 2 * kSendBytes, acc); IBCK(S.send_mr[d]);
     S.recv_mr[d] = ibv_reg_mr(S.pd[d], S.recv_h, 2 * world * kSlotBytes, acc); IBCK(S.recv_mr[d]);
     S.flag_mr[d] = ibv_reg_mr(S.pd[d], S.flag_h, 2 * kMaxWorld * sizeof(uint64_t), acc); IBCK(S.flag_mr[d]);
+    S.ssend_mr[d] = ibv_reg_mr(S.pd[d], S.ssend_h, (size_t)kSites * kSiteBytes, acc); IBCK(S.ssend_mr[d]);
+    S.srecv_mr[d] = ibv_reg_mr(S.pd[d], S.srecv_h, (size_t)kSites * world * kSiteBytes, acc); IBCK(S.srecv_mr[d]);
     S.cq[d] = ibv_create_cq(S.ctx[d], 4096, nullptr, nullptr, 0); IBCK(S.cq[d]);
     ibv_gid gid;
     IBCK(ibv_query_gid(S.ctx[d], 1, S.gid_idx[d], &gid) == 0);
@@ -663,6 +817,7 @@ py::bytes arx_prepare(int64_t rank, int64_t world, std::vector<std::string> devs
     S.mine.mtu[d] = port.active_mtu;
     S.mine.recv_rkey[d] = S.recv_mr[d]->rkey;
     S.mine.flag_rkey[d] = S.flag_mr[d]->rkey;
+    S.mine.srecv_rkey[d] = S.srecv_mr[d]->rkey;
   }
   ibv_free_device_list(list);
   for (int c = 0; c < (ring ? 2 : world); ++c)
@@ -681,6 +836,7 @@ py::bytes arx_prepare(int64_t rank, int64_t world, std::vector<std::string> devs
     }
   S.mine.recv_addr = (uint64_t)S.recv_h;
   S.mine.flag_addr = (uint64_t)S.flag_h;
+  S.mine.srecv_addr = (uint64_t)S.srecv_h;
   return py::bytes(reinterpret_cast<const char*>(&S.mine), sizeof(PeerInfo));
 }
 
@@ -721,6 +877,9 @@ void arx_connect(std::vector<std::string> infos) {
   Dev& d = S.dev;
   d.send = (__nv_bfloat16*)S.send_h; d.recv = (const __nv_bfloat16*)S.recv_h; d.flag = S.flag_h; d.ctl = S.ctl;
   d.rank = S.rank; d.world = S.world;
+  d.ssend = S.ssend_h; d.srecv = S.srecv_h;
+  CK(cudaMalloc(&d.swork_next, 8)); CK(cudaMemset(d.swork_next, 0, 8));
+  CK(cudaMalloc(&d.scnt, 4)); CK(cudaMemset(d.scnt, 0, 4));
 #ifdef ARX_TEST_HOOKS
   const char* slow = std::getenv("ARX_TEST_SLOW_COPY_US");
   d.slow_copy_ns = slow ? std::atoll(slow) * 1000 : 0;
@@ -771,13 +930,67 @@ void arx_allreduce2(torch::Tensor in, torch::Tensor out) {
   auto mid = torch::empty({chunk}, in.options());
   const int threads = 256;
   auto stream = at::cuda::getCurrentCUDAStream();
-  arx_scatter_kernel<<<std::max(1, std::min(8, chunk / (threads * 8))), threads, 0, stream>>>(
+  arx_scatter_kernel<<<std::max(1, std::min(64, chunk / (threads * 8 * 8))), threads, 0, stream>>>(
       S.dev, (const __nv_bfloat16*)in.data_ptr(), (__nv_bfloat16*)mid.data_ptr(), n);
-  arx_gather_kernel<<<std::max(1, std::min(8, n / (threads * 8))), threads, 0, stream>>>(
+  arx_gather_kernel<<<std::max(1, std::min(64, n / (threads * 8 * 8))), threads, 0, stream>>>(
       S.dev, (const __nv_bfloat16*)mid.data_ptr(), (__nv_bfloat16*)out.data_ptr(), chunk);
 }
 
 int64_t arx_max_bytes2() { return S.ring ? 0 : (int64_t)std::min(kSendBytes, kSlotBytes * S.world); }
+
+// Site path all-reduce. producer 0: in is the device input to copy. 1 and 2: in is
+// absent, the data is already in site's send slot (site_input), and at 2 the
+// producer kernel published it through arx_site.h. out is a bf16 device tensor.
+void arx_allreduce_site(int64_t site, c10::optional<torch::Tensor> in, torch::Tensor out, int64_t producer,
+                        std::vector<int64_t> pf_ptrs, std::vector<int64_t> pf_bytes) {
+  TORCH_CHECK(S.connected, "arx is not connected");
+  TORCH_CHECK(!g_proxy_err, "arx proxy failed");
+  TORCH_CHECK(!S.ring, "arx site path is mesh only");
+  TORCH_CHECK(site >= 0 && site < kSites, "arx: site ", site, " out of range");
+  TORCH_CHECK(producer >= 0 && producer <= 2, "arx: producer mode ", producer);
+  TORCH_CHECK(out.scalar_type() == at::kBFloat16 && out.is_contiguous() && out.is_cuda());
+  const int n = out.numel();
+  TORCH_CHECK(n % 8 == 0 && (size_t)n * 2 <= kSiteBytes, "arx: site all-reduce of ", n, " bf16");
+  if (producer == 0) {
+    TORCH_CHECK(in.has_value() && in->scalar_type() == at::kBFloat16 && in->is_contiguous() && in->numel() == n,
+                "arx: producer 0 needs a matching bf16 input");
+  } else {
+    TORCH_CHECK(!in.has_value(), "arx: producer ", producer, " takes no input tensor");
+  }
+  // One block per 32 KB: two blocks at 64 KB measured best under lamport (more pollers only contend).
+  const int threads = 256, blocks = std::max(1, std::min(64, (int)(((size_t)n * 2) / (32 << 10))));
+  Prefetch pf{};
+  pf.count = (int)std::min<size_t>(pf_ptrs.size(), kMaxPrefetch);
+  for (int r = 0; r < pf.count; ++r) {
+    pf.ptr[r] = reinterpret_cast<const uint8_t*>(pf_ptrs[r]);
+    pf.bytes[r] = pf_bytes[r];
+  }
+  arx_site_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
+      S.dev, (int)site, in.has_value() ? (const __nv_bfloat16*)in->data_ptr() : nullptr,
+      (__nv_bfloat16*)out.data_ptr(), n, (int)producer, pf);
+}
+
+// The pinned send slot of a site as a bf16 CUDA tensor of `shape`: a producer's
+// output buffer. Valid until that site's all-reduce has run.
+torch::Tensor arx_site_input(int64_t site, std::vector<int64_t> shape) {
+  TORCH_CHECK(S.connected && !S.ring && site >= 0 && site < kSites, "arx: site input unavailable");
+  int64_t n = 1;
+  for (auto v : shape) n *= v;
+  TORCH_CHECK(n % 8 == 0 && (size_t)n * 2 <= kSiteBytes, "arx: site input of ", n, " bf16");
+  return torch::from_blob(S.ssend_h + (size_t)site * kSiteBytes, shape,
+                          torch::TensorOptions().dtype(at::kBFloat16).device(torch::kCUDA));
+}
+
+// For a producer kernel in another extension that publishes itself (arx_site.h):
+// [ring pointer, next pointer, send slots base, bytes per slot].
+std::vector<int64_t> arx_site_handles() {
+  TORCH_CHECK(S.connected, "arx is not connected");
+  return {(int64_t)(uintptr_t)S.ctl->sring, (int64_t)(uintptr_t)S.dev.swork_next, (int64_t)(uintptr_t)S.ssend_h,
+          (int64_t)kSiteBytes};
+}
+int64_t arx_sites() { return kSites; }
+int64_t arx_site_bytes() { return kSiteBytes; }
+int64_t arx_site_send_base() { return (int64_t)(uintptr_t)S.ssend_h; }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("prepare", &arx_prepare);
@@ -786,4 +999,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("max_bytes", &arx_max_bytes);
   m.def("allreduce2", &arx_allreduce2);
   m.def("max_bytes2", &arx_max_bytes2);
+  m.def("allreduce_site", &arx_allreduce_site);
+  m.def("site_input", &arx_site_input);
+  m.def("site_handles", &arx_site_handles);
+  m.def("sites", &arx_sites);
+  m.def("site_bytes", &arx_site_bytes);
+  m.def("site_send_base", &arx_site_send_base);
 }

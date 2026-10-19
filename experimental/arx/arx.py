@@ -120,6 +120,7 @@ def _load():
         _ext = _jit_load(
             "arx_vllm_test" if test else "arx_vllm",
             [os.path.join(os.path.dirname(__file__), "arx_vllm.cu")],
+            extra_include_paths=[os.path.dirname(__file__)],  # arx_site.h
             extra_cuda_cflags=["-O3", "-std=c++17", "-gencode=arch=compute_121a,code=sm_121a"]
             + (["-DARX_TEST_HOOKS"] if test else []),
             extra_ldflags=["-libverbs"],
@@ -162,11 +163,27 @@ class ArxCommunicator:
         # Two-shot (reduce-scatter + all-gather) for all-reduces above max_bytes,
         # up to this size: 2-2.7x faster than NCCL from 512 KB. Mesh only; 0 is off.
         self.two_shot_max = min(int(os.environ.get("VLLM_ARX_TWO_SHOT_MAX_KB", "0")) << 10, ext.max_bytes2())
+        # Site path (arx_vllm.cu header): per-site pinned slots and lamport arrival for all-reduces
+        # up to site_max bytes, mesh only. Off by default (VLLM_ARX_SITE_MAX=0): bit-exact with the
+        # parity path but ~1.5% slower decode on GLM TP=4, where a step is MoE-read-bound and the
+        # sub-64KB all-reduce is off the critical path. Set it to enable. Sites numbered from begin_step().
+        self.site_max = 0 if ring else min(int(os.environ.get("VLLM_ARX_SITE_MAX", 0)), ext.site_bytes())
+        # Producer 1 (VLLM_ARX_PRODUCER1=1): a dense GEMM whose output is about to be all-reduced writes
+        # it into the site's send slot (site_input) instead of its own buffer, so the all-reduce kernel
+        # skips the copy. Needs the site path on. Bit-exact but decode-flat vs copy mode; left as a knob.
+        self.producer1 = self.site_max > 0 and os.environ.get("VLLM_ARX_PRODUCER1") == "1"
+        self.sites = ext.sites()
+        self._site = 0  # next site of the current step
+        self._site_producer: dict = {}  # site -> 1 (producer wrote the slot) or 2 (producer published it)
+        self._site_base = ext.site_send_base()
+        self._site_bytes = ext.site_bytes()
         self.world = world
         self.disabled = False
-        logger.info("arx all-reduce: rank %d/%d%s on %s, gids %s, up to %d bytes%s", rank, world,
+        logger.info("arx all-reduce: rank %d/%d%s on %s, gids %s, up to %d bytes%s%s", rank, world,
                     " ring (prev, next)" if ring else "", devs, gids, self.max_bytes,
-                    f", two-shot up to {self.two_shot_max} bytes" if self.two_shot_max else "")
+                    f", two-shot up to {self.two_shot_max} bytes" if self.two_shot_max else "",
+                    f", sites up to {self.site_max} bytes" + (" (producer 1)" if self.producer1 else "")
+                    if self.site_max else "")
 
     def should_use(self, t: torch.Tensor, two_shot: bool = False) -> bool:
         """Whether arx takes t: up to max_bytes, or up to two_shot_max when the caller allows it."""
@@ -185,6 +202,74 @@ class ArxCommunicator:
         pf, _prefetch = _prefetch, ()
         self.ext.allreduce(t, out, [p for p, _ in pf], [b for _, b in pf])
         return out
+
+    # ---- site path ---------------------------------------------------------------------------
+
+    def begin_step(self) -> None:
+        """Called once at the start of every forward: site numbers restart at 0."""
+        self._site = 0
+        self._site_producer.clear()
+
+    def site_ok(self, t: torch.Tensor) -> bool:
+        """Whether t goes through the site path: small, bf16, and a site is left in this step. A view
+        of a send slot (site_input) always does: its site is reserved, and all_reduce_site checks it."""
+        if self.site_max > 0 and self._site_of(t) is not None:
+            return True
+        return (self.site_max > 0 and self._site < self.sites and t.dtype == torch.bfloat16 and t.is_cuda
+                and t.is_contiguous() and t.numel() % 8 == 0 and t.numel() * 2 <= self.site_max)
+
+    def site_input(self, shape, self_publish: bool = False):
+        """The next site's pinned send slot as a bf16 tensor, for a producer to write its output into
+        and then pass to all_reduce. self_publish: the producer kernel publishes through arx_site.h
+        itself (producer 2); otherwise the all-reduce kernel publishes on entry (producer 1). None
+        when the site path cannot take it, so the caller allocates normally.
+
+        This reserves the site without advancing the counter: the all-reduce of the returned tensor
+        must be the next site all-reduce, or a peer reads the wrong slot. all_reduce_site raises if
+        another one gets in first. dense_fp8.py's methods call this for o_proj and down_proj.
+        """
+        n = 1
+        for v in shape:
+            n *= v
+        if not (self.site_max > 0 and self._site < self.sites and n % 8 == 0 and n * 2 <= self.site_max):
+            return None
+        if self._site in self._site_producer:
+            raise RuntimeError(f"arx: site {self._site} was handed out by site_input and never all-reduced")
+        self._site_producer[self._site] = 2 if self_publish else 1
+        return self.ext.site_input(self._site, list(shape))
+
+    def site_handles(self):
+        """[ring ptr, next ptr, send slots base, bytes per slot] for a self-publishing producer kernel."""
+        return self.ext.site_handles()
+
+    def _site_of(self, t: torch.Tensor):
+        """The site whose send slot t is a view of, or None."""
+        off = t.data_ptr() - self._site_base
+        if 0 <= off < self.sites * self._site_bytes and off % self._site_bytes == 0:
+            return off // self._site_bytes
+        return None
+
+    def all_reduce_site(self, t: torch.Tensor) -> torch.Tensor:
+        global _prefetch
+        out = torch.empty_like(t)
+        site = self._site_of(t)
+        if site is not None:  # the producer wrote (or published) the slot
+            # The slot was reserved for the next site; a copy-mode all-reduce in between would have
+            # taken this site number too, and the peers would sum the wrong slot.
+            if site != self._site or site not in self._site_producer:
+                raise RuntimeError(f"arx: all-reduce of site {site}'s slot at site {self._site}; "
+                                   "another site all-reduce ran between site_input and this one")
+            producer, src = self._site_producer.pop(site), None
+        else:
+            site, producer, src = self._site, 0, t
+        self._site = site + 1
+        pf, _prefetch = _prefetch, ()
+        self.ext.allreduce_site(site, src, out, producer, [p for p, _ in pf], [b for _, b in pf])
+        return out
+
+    def all_reduce_auto(self, t: torch.Tensor) -> torch.Tensor:
+        """The site path when it applies, else the parity path."""
+        return self.all_reduce_site(t) if self.site_ok(t) else self.all_reduce(t)
 
 
 _big_ext = None
