@@ -23,6 +23,7 @@ Meaning and rationale stay in the entrypoint and compose comments.
 | `DECODE_RESERVE_TOKENS` | _(empty)_ |
 | `DFLASH_MODEL` | `/models/glm-5.3-flash-dflash2` |
 | `EXTRA_ARGS` | _(empty)_ |
+| `QUANT` | _(empty)_ |
 | `FABRIC_CHECK` | `1` |
 | `FABRIC_CHECK_GBPS_PER_DEVICE` | `95` |
 | `FABRIC_CHECK_PORT` | `29511` |
@@ -34,7 +35,8 @@ Meaning and rationale stay in the entrypoint and compose comments.
 | `HEAD_HOST` | elected when `ROLE` is also unset _(derived)_ |
 | `ITERATION_DETAILS` | _(empty)_ |
 | `KV_CACHE_DTYPE` | `fp8_e4m3` |
-| `KV_CACHE_MEMORY` | `27917287424` |
+| `KV_CACHE_MEMORY` | per `TP` and `QUANT`, plus `KV_EXTRA_MEMORY` _(derived)_ |
+| `KV_EXTRA_MEMORY` | `0` |
 | `LIMIT_MM` | `{\"image\":16,\"video\":0\}` |
 | `LONG_PREFILL_TOKEN_THRESHOLD` | `2304` |
 | `MAX_JOBS` | `4` |
@@ -79,6 +81,7 @@ Meaning and rationale stay in the entrypoint and compose comments.
 | `TORCH_MEM_FRACTION` | `0.92` |
 | `TP` | `4` (or `2`, `3`, `RING4`) |
 | `TRITON_CACHE_DIR` | `${CACHE_ROOT}/${SHARED_TAG}/triton` _(derived)_ |
+| `VLLM_ARX_SITE_MAX` | `0` (with arx.yaml; set to a byte cap to route decode all-reduces onto the site path; off by default — bit-exact but ~1.5% slower decode on GLM TP=4, where the all-reduce is off a MoE-read-bound step) |
 | `VLLM_ARX_TWO_SHOT_MAX_KB` | `2048` (with arx.yaml; `0` sends all-reduces over 256 KB to NCCL; up to `16384`, which measured the same at TP=4) |
 | `VLLM_DRAFT_TRUNC_EXPLORE` | `4` (with adaptive-k.yaml; every Nth step skips the draft cut, and only those steps train the estimator) |
 | `VLLM_DRAFT_TRUNC_TAU` | `0.3` (with adaptive-k.yaml; `0` turns the draft cut off) |

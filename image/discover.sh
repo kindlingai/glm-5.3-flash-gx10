@@ -44,7 +44,7 @@ print(node + "|" + (lan[0] if lan else node) + "|" + " ".join(fabric))
 discover_network() {
   local want_ip="" want_fabric="" want_node="" view node lan fabric waited=0
   [[ -z "${VLLM_HOST_IP:-}" ]] && want_ip=1
-  [[ -z "${CLUSTER_SUBNET:-}" && -z "${FABRIC_SUBNETS:-}" ]] && want_fabric=1
+  [[ -z "${CLUSTER_SUBNET:-}" && -z "${FABRIC_SUBNETS:-}" && "${TP:-4}" != 1 ]] && want_fabric=1
   # Every box registers with its own daemon, and an agent that reaches its
   # daemon over loopback leaves its address out of its agent id. The relay to
   # the head fills in the address but not the id, so four boxes would register

@@ -27,7 +27,10 @@ services:
   glm53:
     # image/build.sh's default tag. Keep the two in step: the entrypoint's
     # defaults live in the image, and an older tag boots silently mistuned.
-    image: ${IMAGE:-spark-glm53:v9}
+    # Before v26 the entrypoint ignores SPEC_EXTRA: adaptive-k collapses to one
+    # draft length (no prose taper) and the drafter loses
+    # disable_eagle_block_drop and the TRITON_ATTN backend.
+    image: ${IMAGE:-spark-glm53:v28}
     container_name: glm53
     network_mode: host
     ipc: host

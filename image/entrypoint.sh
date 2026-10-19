@@ -54,10 +54,18 @@ fi
 # writes adaptive-k's step cost used to include, so it gets its own prior,
 # fitted on code and prose at two concurrencies with k forced to 2 and 7.
 _rs=0; [[ "${VLLM_GLM5NEXT_RECOVERSSM:-0}" == 1 ]] && _rs=1
+# exlr8 ranks hold fewer weight bytes than NVFP4 ranks, so they get their own
+# KV pins. Each left at least ~4.5 GiB free on every rank through 480k
+# prefills and four concurrent 128k requests with the vision tower loaded, on
+# DGX OS or kindling-spark-os less its extra 2 GiB. KV_EXTRA_MEMORY adds that
+# 2 GiB back on spark-os.
+_x=0; [[ "${QUANT:-}" == exlr8 ]] && _x=1
+# KV_EXTRA_MEMORY (bytes) raises the default pin: at TP=2, 3, 4 and 6 for
+# exlr8, at TP=4 only for NVFP4. dispram.yaml sets 2 GiB, the RAM kindling-spark-os's
+# 64 KiB kernel returns.
+_extra=${KV_EXTRA_MEMORY:-0}
 case "$TP" in
-  4) # KV_EXTRA_MEMORY (bytes) raises the default pin. dispram.yaml sets 2 GiB,
-     # the RAM kindling-spark-os's 64 KiB kernel returns.
-     : "${KV_CACHE_MEMORY:=$(( 27917287424 + ${KV_EXTRA_MEMORY:-0} ))}" "${MAX_MODEL_LEN:=524288}"
+  4) : "${KV_CACHE_MEMORY:=$(( (_x ? 40802189312 : 27917287424) + _extra ))}" "${MAX_MODEL_LEN:=524288}"
      (( _rs )) && : "${MAX_NUM_SEQS:=64}" "${VLLM_ADAPTIVE_K_MODEL:=26.4,0.660,0.484}"
      # With the drafter's KV in its own pool (fixes.yaml), ~50 requests' KDA
      # states fit in the pool; without it, 32.
@@ -68,7 +76,7 @@ case "$TP" in
      # holds 1.4M tokens (1.7M with RecoverSSM). Block 3456 becomes 3584 in
      # vLLM: 14% mamba page padding, where the 4608 it picks from 2304 pads 46%
      # and coarsens the prefix cache.
-     : "${KV_CACHE_MEMORY:=12884901888}" "${MAX_MODEL_LEN:=524288}" "${BLOCK_SIZE:=3456}"
+     : "${KV_CACHE_MEMORY:=$(( _x ? 27917287424 + _extra : 12884901888 ))}" "${MAX_MODEL_LEN:=524288}" "${BLOCK_SIZE:=3456}"
      export BLOCK_SIZE
      # With RecoverSSM, 64 requests at k=7 fill the 512-token graph cap as at
      # TP=4: +24% aggregate at 48 streams over 32, single-stream unchanged.
@@ -78,22 +86,33 @@ case "$TP" in
      : "${VLLM_ADAPTIVE_K_MODEL:=27.5,0.795,0.50}" ;;
   6) # Six boxes on the same zero-padded checkpoint as TP=3 (66 / 66 / 2304
      # split as 11 heads and 384 MoE columns per rank). Weights are ~1/6 per
-     # rank, so the TP=4 KV pin fits. With 11 KDA heads a rank's mamba page is
+     # rank, so the TP=4 KV pin fits (unmeasured for exlr8). With 11 KDA heads a rank's mamba page is
      # ~1573 tokens of attention page: block 2304 pads it 46%, 1792 (the
      # smallest multiple of 256 above it) 14%, for a 1.7% bigger pool and
      # 17% faster cached TTFT.
-     : "${KV_CACHE_MEMORY:=27917287424}" "${MAX_MODEL_LEN:=524288}" "${BLOCK_SIZE:=1792}"
+     : "${KV_CACHE_MEMORY:=$(( _x ? 40802189312 + _extra : 27917287424 ))}" "${MAX_MODEL_LEN:=524288}" "${BLOCK_SIZE:=1792}"
      export BLOCK_SIZE
      (( _rs )) && : "${MAX_NUM_SEQS:=64}"
      # What the online fit converged to at TP=6 with RecoverSSM on (1% error).
      : "${VLLM_ADAPTIVE_K_MODEL:=19.3,0.50,0.40}" ;;
-  2) : "${KV_CACHE_MEMORY:=8589934592}" "${MAX_MODEL_LEN:=163840}" "${MAX_NUM_BATCHED_TOKENS:=8192}"
+  2) : "${KV_CACHE_MEMORY:=$(( _x ? 32212254720 + _extra : 8589934592 ))}" "${MAX_MODEL_LEN:=163840}" "${MAX_NUM_BATCHED_TOKENS:=8192}"
      # A rank reads twice the expert weights it does at TP=4, so the
      # per-expert cost is held at twice TP=4's and the rest fitted.
      (( _rs )) && : "${MAX_NUM_SEQS:=16}" "${VLLM_ADAPTIVE_K_MODEL:=32.1,1.32,0.427}"
      : "${MAX_NUM_SEQS:=4}"
      : "${VLLM_ADAPTIVE_K_MODEL:=35.0,1.27,0.8}" ;;
-  *) echo "FATAL: TP=$TP; this recipe is tuned for TP=4 or TP=RING4 (four boxes), TP=6 (six), TP=3 or TP=RING3 (three) or TP=2 (two)" >&2; exit 1 ;;
+  1) # One box, the whole model at k2 (~87 GiB of weights). tp1.yaml sets the
+     # width and batch budget.
+     # No KV_EXTRA_MEMORY: on spark-os 10 + 2 GiB left the box 2.0 GiB free
+     # and 1.7 GiB into swap.
+     : "${KV_CACHE_MEMORY:=10737418240}" "${MAX_MODEL_LEN:=163840}"
+     (( _rs )) && : "${MAX_NUM_SEQS:=16}"
+     : "${MAX_NUM_SEQS:=4}"
+     # Unfitted; VLLM_ADAPTIVE_K_ONLINE corrects it. A single rank reads every
+     # expert (k2 ~0.75x k3 bytes) so per-expert ~1.9, and the dense/attention
+     # base is ~2x a TP=2 rank's.
+     : "${VLLM_ADAPTIVE_K_MODEL:=45.0,1.90,0.60}" ;;
+  *) echo "FATAL: TP=$TP; this recipe is tuned for TP=4 or TP=RING4 (four boxes), TP=6 (six), TP=3 or TP=RING3 (three), TP=2 (two) or TP=1 (one)" >&2; exit 1 ;;
 esac
 export VLLM_ADAPTIVE_K_MODEL
 # SPEC_METHOD picks the drafter: dflash (the separate DFlash2 draft model at
@@ -211,7 +230,9 @@ fabric_port() {
 # it with the static profile already in place and the table comes up dense,
 # moving that 6 to 5, at which point a pinned 6 names an empty slot and NCCL
 # fails every TP init with "unhandled system error".
-if [[ -z "${NCCL_IB_HCA:-}" || -z "${NCCL_IB_GID_INDEX:-}" ]]; then
+if (( TP == 1 )); then
+  echo "fabric: TP=1, single rank -- no NCCL fabric derivation"
+elif [[ -z "${NCCL_IB_HCA:-}" || -z "${NCCL_IB_GID_INDEX:-}" ]]; then
   _waited=0
   while :; do
     _hcas=""; _gid=""; _mismatch=""; _missing=""
@@ -738,7 +759,7 @@ fi
 # Times an NCCL all-reduce and compares versions, override files and knobs
 # across nodes (fabric-check.py); on a ring it compares only. Warnings only;
 # FABRIC_CHECK=0 skips it, and a check that hangs is stopped.
-if [[ "${FABRIC_CHECK:-1}" == "1" ]]; then
+if [[ "${FABRIC_CHECK:-1}" == "1" ]] && (( TP > 1 )); then
   stage fabric-check
   FABRIC_LAYOUT="$FABRIC_LAYOUT" timeout "$(( 3 * ${FABRIC_CHECK_TIMEOUT_S:-120} ))" \
     python3 /usr/local/bin/fabric-check.py || echo "fabric check: failed or timed out; continuing"
@@ -1045,7 +1066,7 @@ exec vllm serve "$MODEL" \
   --served-model-name "$SERVED" \
   --tensor-parallel-size "$TP" \
   --distributed-executor-backend ray \
-  --load-format auto \
+  --load-format "${QUANT:-auto}" \
   --safetensors-load-strategy "${SAFETENSORS_LOAD_STRATEGY:-eager}" \
   --gpu-memory-utilization "${GPU_MEM_UTIL:-0.88}" \
   --max-model-len "${MAX_MODEL_LEN}" \
@@ -1066,4 +1087,5 @@ exec vllm serve "$MODEL" \
   --reasoning-parser glm45 \
   "${SPEC[@]}" \
   --host 0.0.0.0 --port "${API_PORT:-8002}" \
-  ${EXTRA_ARGS:-}
+  ${EXTRA_ARGS:-} \
+  ${QUANT:+--quantization $QUANT}

@@ -41,7 +41,7 @@ fabric), on three boxes.
    padded. Run inside the image this repo builds:
 
        docker run --rm -v /srv/models:/srv/models --entrypoint python3 \
-         -v "$PWD/experimental/tp3":/tp3:ro spark-glm53:v9 /tp3/make_padded.py \
+         -v "$PWD/experimental/tp3":/tp3:ro spark-glm53:v28 /tp3/make_padded.py \
          /srv/models/glm-5.3-flash-nvfp4 /srv/models/glm-5.3-flash-nvfp4-tp3 \
          /srv/models/glm-5.3-flash-dflash2 /srv/models/glm-5.3-flash-dflash2-tp3
 

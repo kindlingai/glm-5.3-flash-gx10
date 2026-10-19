@@ -34,7 +34,7 @@ GBPS_PER_DEVICE = float(os.environ.get("FABRIC_CHECK_GBPS_PER_DEVICE", "95"))
 # Knobs every rank must agree on. Per-node values (addresses, device names,
 # the GID index, which the kernel assigns per boot) are listed, not compared.
 SAME_ENV = ("TP", "MAX_NUM_BATCHED_TOKENS", "MAX_MODEL_LEN", "BLOCK_SIZE", "KV_CACHE_DTYPE", "KV_CACHE_MEMORY",
-            "GPU_MEM_UTIL", "SPEC_METHOD", "SPEC_TOKENS", "MOE_BACKEND", "EXTRA_ARGS", "MTP", "HEAD_HOST")
+            "GPU_MEM_UTIL", "SPEC_METHOD", "SPEC_TOKENS", "MOE_BACKEND", "EXTRA_ARGS", "QUANT", "MTP", "HEAD_HOST")
 
 
 def sha(path: str) -> str:
