@@ -117,6 +117,9 @@ services:
       # up. Both default to waiting forever, because the usual reason either is
       # missing is a switch reboot, and a container that exits then just races
       # it. Set a bound only where a stuck stack must surface as a failure.
+      # Empty = 0..TP-1 under TP=RING4 or RING3: mentat's cable order (the
+      # entrypoint says why). Set it only to override the order.
+      - VLLM_RAY_BUNDLE_INDICES=${VLLM_RAY_BUNDLE_INDICES:-}
       - FABRIC_WAIT_S=${FABRIC_WAIT_S:-}
       - WORKER_WAIT_S=${WORKER_WAIT_S:-}
       # How long the RoCE device and its GID table get to appear once the

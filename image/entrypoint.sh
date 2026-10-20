@@ -38,6 +38,14 @@ elif [[ "$TP" == RING3 ]]; then
   export MENTAT_CLAIM_LAYOUT=ring FABRIC_RING_GRAPH=0 VLLM_ARXBIG=0
   FABRIC_CHECK="${FABRIC_CHECK:-0}"   # its mesh-mode probe cannot reach across cables
 fi
+# mentat places the placement group's bundles in cable order, but vLLM's Ray
+# executor re-sorts them by node id unless VLLM_RAY_BUNDLE_INDICES names an
+# order. A re-sorted ring gives a rank NCCL and arx neighbours it has no cable
+# to, and the head dies right after NCCL init. Keep mentat's order.
+if [[ "$FABRIC_LAYOUT" == ring && -z "${VLLM_RAY_BUNDLE_INDICES:-}" ]]; then
+  VLLM_RAY_BUNDLE_INDICES=$(seq 0 $(( TP - 1 )) | paste -sd, -)
+  export VLLM_RAY_BUNDLE_INDICES
+fi
 
 # --- per-TP defaults ---------------------------------------------------------
 # Each rank holds 1/TP of the weights and of every request's KDA state, so
