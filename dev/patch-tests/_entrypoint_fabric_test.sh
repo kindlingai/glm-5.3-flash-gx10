@@ -12,7 +12,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fails=0
 
-sed -n '/^if \[\[ -z "${NCCL_IB_HCA:-}" || -z "${NCCL_IB_GID_INDEX:-}" \]\]; then$/,/^export NCCL_IB_HCA NCCL_IB_GID_INDEX$/p' \
+sed -n '/^if (( TP == 1 )); then$/,/^export NCCL_IB_HCA NCCL_IB_GID_INDEX$/p' \
   "$ep" > "$tmp/block.sh"
 if ! grep -q '^export NCCL_IB_HCA' "$tmp/block.sh"; then
   echo "FAIL could not cut the fabric block out of $ep"; exit 1
@@ -29,7 +29,7 @@ check() {
 # NCCL_IB_HCA|NCCL_IB_GID_INDEX|seconds waited|exit status
 # on stdout, and the block's own messages in $tmp/err.
 run() {
-  env -i PATH="$PATH" BLOCK="$tmp/block.sh" FABRIC_LAYOUT=mesh "$@" bash -c '
+  env -i PATH="$PATH" BLOCK="$tmp/block.sh" FABRIC_LAYOUT=mesh TP=4 "$@" bash -c '
     set -euo pipefail
     NOW=0
     fabric_port() {
@@ -84,6 +84,9 @@ check "says disagree" "$(grep -c "disagree on GID index" "$tmp/err")" "1"
 echo "== both pinned in .env"
 check "derivation skipped" \
   "$(run NCCL_IB_HCA=mlx5_9 NCCL_IB_GID_INDEX=7 FABRIC_SUBNETS="$A $B")" "mlx5_9|7|0|0"
+
+echo "== TP=1"
+check "derivation skipped" "$(run TP=1 FABRIC_SUBNETS="$A $B")" "||0|0"
 
 echo "$fails failure(s)"
 exit "$fails"
