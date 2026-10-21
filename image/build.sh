@@ -4,7 +4,7 @@
 # spark-agent submodule) stays inside it. Copy the tree to a build box with
 # `rsync -a`, which keeps the hidden .submodules/ and the symlink.
 set -euo pipefail
-TAG="${TAG:-spark-glm53:v28}"
+TAG="${TAG:-spark-glm53:v29}"
 cd "$(dirname "$0")/.."
 args=(-t "$TAG" -f image/Dockerfile)
 [ -n "${BASE:-}" ]           && args+=(--build-arg "BASE=$BASE")

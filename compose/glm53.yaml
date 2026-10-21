@@ -30,7 +30,7 @@ services:
     # Before v26 the entrypoint ignores SPEC_EXTRA: adaptive-k collapses to one
     # draft length (no prose taper) and the drafter loses
     # disable_eagle_block_drop and the TRITON_ATTN backend.
-    image: ${IMAGE:-spark-glm53:v28}
+    image: ${IMAGE:-spark-glm53:v29}
     container_name: glm53
     network_mode: host
     ipc: host
