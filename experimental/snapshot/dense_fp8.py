@@ -147,6 +147,20 @@ def _jit_load(name, *args, **kwargs):
 
     from torch.utils.cpp_extension import _get_build_directory, load
 
+    # Name the build after its sources, headers and flags too. Both recipes share one cache volume, and
+    # ninja's mtime check keeps a .so built from another copy of the same file, so each version of an
+    # extension gets its own build directory and the versions sit side by side.
+    import hashlib
+
+    sources = list(args[0] if args else kwargs["sources"])
+    for d in kwargs.get("extra_include_paths") or []:
+        sources += sorted(os.path.join(d, n) for n in os.listdir(d) if n.endswith((".h", ".cuh")))
+    key = hashlib.sha256(repr(sorted((k, v) for k, v in kwargs.items() if k != "sources")).encode())
+    for s in sources:
+        with open(s, "rb") as f:
+            key.update(f.read())
+    name = f"{name}_{key.hexdigest()[:12]}"
+
     build = _get_build_directory(name, False)
     with open(os.path.join(build, "lock.flock"), "w") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
