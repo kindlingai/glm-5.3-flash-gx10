@@ -117,12 +117,12 @@ def _check_port(side: str, iface: str, devs: list[str]) -> None:
             "root, or NCCL and arx cannot open queue pairs on it.")
 
 
-def _graph_xml(nccl_index: dict[str, int], prev: list[str], nxt: list[str], nchannels: int) -> str:
-    """A ring graph for one GPU per node: channel c receives on prev[c % 2]
-    and sends on next[c % 2], alternating PCIe roots across channels."""
+def _graph_xml(prev_net: list[int], next_net: list[int], nchannels: int) -> str:
+    """A ring graph for one GPU per node: channel c receives on NCCL net device
+    prev_net[c % 2] and sends on next_net[c % 2], alternating PCIe roots."""
     chans = "".join(
-        f'<channel><net dev="{nccl_index[prev[c % 2]]}"/><gpu dev="0"/>'
-        f'<net dev="{nccl_index[nxt[c % 2]]}"/></channel>'
+        f'<channel><net dev="{prev_net[c % 2]}"/><gpu dev="0"/>'
+        f'<net dev="{next_net[c % 2]}"/></channel>'
         for c in range(nchannels)
     )
     # The speeds and path types are what NCCL computes for its own ring on
@@ -134,6 +134,23 @@ def _graph_xml(nccl_index: dict[str, int], prev: list[str], nxt: list[str], ncha
         'speedinter="0.24" latencyinter="0" typeintra="LOC" typeinter="P2C" samechannels="1">'
         f"{chans}</graph></graphs>\n"
     )
+
+
+def _nets(name: str, computed: list[int], ndevs: int) -> list[int]:
+    """NCCL net device numbers for one side of the ring: `computed`, unless the
+    environment variable `name` lists one number per PCI root (for example
+    FABRIC_RING_NEXT_NET=1,3). The override lets a box whose cables do not
+    match the computed numbering set them by hand."""
+    v = os.environ.get(name, "").strip()
+    if not v:
+        return computed
+    try:
+        nets = [int(x) for x in v.split(",")]
+    except ValueError:
+        raise RuntimeError(f"{name}={v!r}: want comma-separated NCCL net device numbers, one per PCI root")
+    if len(nets) != len(computed) or not all(0 <= n < ndevs for n in nets):
+        raise RuntimeError(f"{name}={v!r}: want {len(computed)} numbers, each from 0 to {ndevs - 1}")
+    return nets
 
 
 def _setup() -> None:
@@ -150,8 +167,17 @@ def _setup() -> None:
     index = {d: i for i, d in enumerate(devs)}
     nchannels = int(os.environ.get("NCCL_MAX_NCHANNELS") or 8)
     path = f"/tmp/nccl-ring-graph.{os.getpid()}.xml"
+    prev_net = _nets("FABRIC_RING_PREV_NET", [index[d] for d in prev], len(devs))
+    next_net = _nets("FABRIC_RING_NEXT_NET", [index[d] for d in nxt], len(devs))
+    if os.environ.get("FABRIC_RING_DEBUG") == "1":
+        sys.stderr.write(
+            f"fabric_ring: rank {os.environ.get('MENTAT_FABRIC_RANK', '?')} of {os.environ.get('MENTAT_FABRIC_SIZE', '?')}, "
+            f"prev {prev_iface} {prev} -> nets {prev_net}, next {nxt_iface} {nxt} -> nets {next_net}, "
+            f"NCCL_IB_HCA order {devs}\n")
+        os.environ.setdefault("NCCL_DEBUG", "INFO")
+        os.environ.setdefault("NCCL_DEBUG_SUBSYS", "INIT,GRAPH,NET")
     with open(path, "w") as f:
-        f.write(_graph_xml(index, prev, nxt, nchannels))
+        f.write(_graph_xml(prev_net, next_net, nchannels))
     if os.environ.get("FABRIC_RING_GRAPH", "1") != "0":
         os.environ.update({"NCCL_ALGO": "Ring", "NCCL_GRAPH_FILE": path})
     else:

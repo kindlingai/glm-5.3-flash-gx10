@@ -120,6 +120,11 @@ services:
       # Empty = 0..TP-1 under TP=RING4 or RING3: mentat's cable order (the
       # entrypoint says why). Set it only to override the order.
       - VLLM_RAY_BUNDLE_INDICES=${VLLM_RAY_BUNDLE_INDICES:-}
+      # Ring debugging (image/fabric_ring.py): per-box NCCL net device numbers
+      # for the graph's receive and send sides, and NCCL's device and ring logs.
+      - FABRIC_RING_PREV_NET=${FABRIC_RING_PREV_NET:-}
+      - FABRIC_RING_NEXT_NET=${FABRIC_RING_NEXT_NET:-}
+      - FABRIC_RING_DEBUG=${FABRIC_RING_DEBUG:-}
       - FABRIC_WAIT_S=${FABRIC_WAIT_S:-}
       - WORKER_WAIT_S=${WORKER_WAIT_S:-}
       # How long the RoCE device and its GID table get to appear once the
