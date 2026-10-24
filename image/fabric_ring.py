@@ -154,6 +154,11 @@ def _setup() -> None:
         f.write(_graph_xml(index, prev, nxt, nchannels))
     if os.environ.get("FABRIC_RING_GRAPH", "1") != "0":
         os.environ.update({"NCCL_ALGO": "Ring", "NCCL_GRAPH_FILE": path})
+        # The graph names each channel's device. Subnet-aware routing would pick
+        # a peer's device by its subnet instead, and ranks with no cable between
+        # them share none, so their queue pairs time out after NCCL init.
+        if os.environ.pop("NCCL_IB_SUBNET_AWARE_ROUTING", None) is not None:
+            sys.stderr.write("fabric_ring: dropping NCCL_IB_SUBNET_AWARE_ROUTING; the ring graph sets each channel's device\n")
     else:
         # NCCL takes one device per channel for both directions of a ring
         # graph, so in a triangle a graph sends to next over the cable to
