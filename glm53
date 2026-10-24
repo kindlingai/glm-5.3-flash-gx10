@@ -14,7 +14,7 @@
 # GB10's display carveout. DISPRAM=0 leaves it out.
 set -e
 cd "$(dirname "$0")"
-overlays=(arx snapshot adaptive-k fp8 megamoe fixes sp recoverssm)
+overlays=(arx snapshot adaptive-k fp8 megamoe fixes oom-hardening sp recoverssm)
 files=(-f compose/glm53.yaml)
 extra=()
 stock=0
