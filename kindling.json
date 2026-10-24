@@ -4,7 +4,7 @@
   "variant": "NVFP4",
   "summary": "nvidia/GLM-5.3-Flash-NVFP4 on vLLM with mentat in place of Ray, over RoCE. DFlash2 speculative decoding, GB10 NVFP4 MoE kernels, RDMA collectives and processed-weight snapshots for ~3 minute restarts.",
   "model": "nvidia/GLM-5.3-Flash-NVFP4",
-  "hardware": "ASUS GX10 (GB10)",
+  "hardware": "DGX SPARK (GB10)",
   "stack": ["vLLM", "mentat", "DFlash2", "RoCE"],
   "default_config": "tp4",
   "configs": [
