@@ -1,11 +1,15 @@
 # GLM-5.3-Flash on DGX Spark (GB10): TP=2, 3, 4 or 6
 
-Need help? Join us on discord: https://discord.gg/M7XTrRJW3
+Need help? Join us on Discord: https://discord.gg/VmsM9GWqZ
+
+> On one or two boxes, [gr8](https://github.com/kindlingai/gr8) also serves GLM-5.3-Flash, without vLLM:
+> [one box](https://github.com/kindlingai/glm-5.3-flash-exlr8-1x-spark),
+> [two boxes](https://github.com/kindlingai/glm-5.3-flash-exlr8-2x-spark).
 
 nvidia/GLM-5.3-Flash-NVFP4 served by vLLM on two, three, four or six GB10
 boxes (TP=2, 3, 4 or 6), over RoCE. The base is an unmodified vLLM nightly
 with a few small patches, a newer FlashKDA, and
-[mentat](https://github.com/mmastrac/mentat) in place of Ray. What makes it fast:
+[mentat](https://github.com/kindlingai/mentat) in place of Ray. What makes it fast:
 
 - DFlash2 speculative decoding, with a scheduler that picks the draft length
   each step from a live model of step cost and acceptance.
@@ -153,12 +157,12 @@ that holds cluster membership.
 | `.submodules/spark-agent` | the status server, reached through the `vllm` symlink |
 | `dev/` | not in the image: the corruption diagnosis and repros, kernel and patch tests, the step tap |
 
-mentatd and mentatd-serve come from the [mentat](https://github.com/mmastrac/mentat)
+mentatd and mentatd-serve come from the [mentat](https://github.com/kindlingai/mentat)
 repo, with their own compose files (step 4).
 
 ## 1. Get the repo onto every box
 
-    git clone --recursive https://github.com/mmastrac/glm-5.3-flash-4x-gx10
+    git clone --recursive https://github.com/kindlingai/glm-5.3-flash-gx10
     # or, in an existing clone: git submodule update --init
 
 The status server comes from the
@@ -228,7 +232,7 @@ tools or `docker exec glm53 tail /logs/vllm.log`.
 ## 4. Start mentatd, and mentatd-serve on one box
 
 mentat has its own repo, compose files and `.env`. On every box, in a
-checkout of [mmastrac/mentat](https://github.com/mmastrac/mentat) at `v0.17.1`:
+checkout of [kindlingai/mentat](https://github.com/kindlingai/mentat) at `v0.17.1`:
 
     VERSION=0.17.1 ./build.sh
     cat > .env <<'EOF'
@@ -602,7 +606,7 @@ restarting the one box's mentatd and model was not enough.
 
 ## Credits
 
-[mmastrac/mentat](https://github.com/mmastrac/mentat) ·
+[kindlingai/mentat](https://github.com/kindlingai/mentat) ·
 [mmastrac/spark-agent](https://github.com/mmastrac/spark-agent) ·
 [tonyd2wild](https://github.com/tonyd2wild) ·
 [MiaAI-Lab](https://github.com/MiaAI-Lab) (sm_121 patches, see
@@ -614,10 +618,10 @@ and [RigMark](https://github.com/alexellis/rigmark) for the gate ·
 [incoai](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2) (the DFlash2 drafter) ·
 [NNNtrance](https://github.com/NNNtrance/GLM-5.3-Flash-EXL3-DGX-Spark) (the fail-closed
 tool parser idea) ·
-[Chuck](https://github.com/chuck-ads) (the RDMA path MTU, [#6](https://github.com/mmastrac/glm-5.3-flash-4x-gx10/pull/6), and the
-streamed tool call and page cache reports, [#7](https://github.com/mmastrac/glm-5.3-flash-4x-gx10/issues/7)) ·
+[Chuck](https://github.com/chuck-ads) (the RDMA path MTU, [#6](https://github.com/kindlingai/glm-5.3-flash-gx10/pull/6), and the
+streamed tool call and page cache reports, [#7](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/7)) ·
 [ayayalar](https://github.com/ayayalar) (the first-boot stall report behind the
-fabric check, [#5](https://github.com/mmastrac/glm-5.3-flash-4x-gx10/issues/5)) ·
+fabric check, [#5](https://github.com/kindlingai/glm-5.3-flash-gx10/issues/5)) ·
 [stevededrick](https://github.com/stevededrick) (the arx idle backoff,
 [#59](https://github.com/kindlingai/glm-5.3-flash-gx10/pull/59)) ·
 [sdougbrown](https://github.com/sdougbrown) (the EAGLE block drop,
