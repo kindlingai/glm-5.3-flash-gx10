@@ -1,6 +1,6 @@
 # GLM-5.3-Flash on DGX Spark (GB10): TP=2, 3, 4 or 6
 
-Need help? Join us on Discord: https://discord.gg/VmsM9GWqZ
+Need help? Join us on Discord: https://discord.gg/8EAvYPV2rE
 
 > On one or two boxes, [gr8](https://github.com/kindlingai/gr8) also serves GLM-5.3-Flash, without vLLM:
 > [one box](https://github.com/kindlingai/glm-5.3-flash-exlr8-1x-spark),
