@@ -10,6 +10,8 @@ Fakes /sys/class/infiniband, /sys/class/net and /sys/bus/pci under a temp tree
   - with the second root's netdevs unaddressed (no IPv4 RoCE v2 GID), setup
     stops and names the device, its netdev and the fix
   - a port with no RDMA devices stops setup and names the interface
+  - FABRIC_RING_PREV_NET / FABRIC_RING_NEXT_NET replace the graph's computed
+    NCCL net device numbers, and a malformed value stops setup
   - a failure at interpreter start exits the process with status 1 instead of
     letting Python print the error and carry on
 CPU only, reads nothing from the real host:
@@ -107,7 +109,7 @@ class FakeSys:
         shutil.rmtree(self.root)
 
 
-ENV_KEYS = ("MENTAT_FABRIC_LAYOUT", "NCCL_IB_HCA", "NCCL_IB_GID_INDEX",
+ENV_KEYS = ("MENTAT_FABRIC_LAYOUT", "NCCL_IB_HCA", "NCCL_IB_GID_INDEX", "FABRIC_RING_PREV_NET", "FABRIC_RING_NEXT_NET",
             "NCCL_ALGO", "NCCL_GRAPH_FILE", "NCCL_MAX_NCHANNELS",
             "VLLM_ARX_RING", "ARX_RING_PREV_HCAS", "ARX_RING_NEXT_HCAS")
 
@@ -175,6 +177,32 @@ class RingTest(unittest.TestCase):
             self.assertEqual(os.environ["ARX_RING_PREV_HCAS"], ",".join(A_DEVS))
             self.assertEqual(os.environ["ARX_RING_NEXT_HCAS"], ",".join(B_DEVS))
         finally:
+            fake.cleanup()
+
+    def test_net_overrides_set_the_graph(self):
+        fake = FakeSys(self.addr())
+        try:
+            fabric_ring.SYS_ROOT = fake.sys
+            os.environ["FABRIC_RING_PREV_NET"] = "1,3"
+            os.environ["FABRIC_RING_NEXT_NET"] = "0,2"
+            fabric_ring._setup()
+            chans = ET.parse(os.environ["NCCL_GRAPH_FILE"]).getroot().find("graph").findall("channel")
+            for c, ch in enumerate(chans):
+                self.assertEqual([int(d.get("dev")) for d in ch.findall("net")], [[1, 3][c % 2], [0, 2][c % 2]])
+        finally:
+            fake.cleanup()
+
+    def test_bad_net_override_stops_setup(self):
+        fake = FakeSys(self.addr())
+        try:
+            fabric_ring.SYS_ROOT = fake.sys
+            for bad in ("1", "1,9", "a,b"):
+                os.environ["FABRIC_RING_NEXT_NET"] = bad
+                with self.assertRaises(RuntimeError) as e:
+                    fabric_ring._setup()
+                self.assertIn("FABRIC_RING_NEXT_NET", str(e.exception))
+        finally:
+            os.environ.pop("FABRIC_RING_NEXT_NET", None)
             fake.cleanup()
 
     def test_unaddressed_second_root_names_netdev(self):
