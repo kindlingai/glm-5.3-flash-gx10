@@ -7,6 +7,8 @@ Fakes /sys/class/infiniband, /sys/class/net and /sys/bus/pci under a temp tree
     channels and the ARX_RING_* env are what they were before the port check
   - NCCL_IB_GID_INDEX is dropped: ring mode picks each device's GID by its
     own address, and the cables' indexes differ
+  - NCCL_IB_SUBNET_AWARE_ROUTING left in the environment is dropped when the
+    ring graph is on: the graph names each channel's device
   - with the second root's netdevs unaddressed (no IPv4 RoCE v2 GID), setup
     stops and names the device, its netdev and the fix
   - a port with no RDMA devices stops setup and names the interface
@@ -107,7 +109,7 @@ class FakeSys:
         shutil.rmtree(self.root)
 
 
-ENV_KEYS = ("MENTAT_FABRIC_LAYOUT", "NCCL_IB_HCA", "NCCL_IB_GID_INDEX",
+ENV_KEYS = ("MENTAT_FABRIC_LAYOUT", "NCCL_IB_HCA", "NCCL_IB_GID_INDEX", "NCCL_IB_SUBNET_AWARE_ROUTING",
             "NCCL_ALGO", "NCCL_GRAPH_FILE", "NCCL_MAX_NCHANNELS",
             "VLLM_ARX_RING", "ARX_RING_PREV_HCAS", "ARX_RING_NEXT_HCAS")
 
@@ -174,6 +176,17 @@ class RingTest(unittest.TestCase):
             self.assertEqual(os.environ["VLLM_ARX_RING"], "1")
             self.assertEqual(os.environ["ARX_RING_PREV_HCAS"], ",".join(A_DEVS))
             self.assertEqual(os.environ["ARX_RING_NEXT_HCAS"], ",".join(B_DEVS))
+        finally:
+            fake.cleanup()
+
+    def test_graph_drops_subnet_aware_routing(self):
+        fake = FakeSys(self.addr())
+        try:
+            fabric_ring.SYS_ROOT = fake.sys
+            os.environ["NCCL_IB_SUBNET_AWARE_ROUTING"] = "1"
+            fabric_ring._setup()
+            self.assertEqual(os.environ["NCCL_ALGO"], "Ring")
+            self.assertNotIn("NCCL_IB_SUBNET_AWARE_ROUTING", os.environ)
         finally:
             fake.cleanup()
 
