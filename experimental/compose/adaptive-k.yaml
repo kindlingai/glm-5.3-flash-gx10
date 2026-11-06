@@ -21,7 +21,7 @@ services:
       - ../experimental/draft-trunc/speculator.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/spec_decode/speculator.py:ro
       - ../experimental/draft-trunc/dflash2_speculator.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/spec_decode/dflash2/speculator.py:ro
     environment:
-      - EXTRA_ARGS=--scheduler-cls vllm.v1.core.sched.adaptive_k.AdaptiveKScheduler
+      - EXTRA_ARGS=--scheduler-cls vllm.v1.core.sched.adaptive_k.AdaptiveKScheduler --default-chat-template-kwargs {"enable_thinking":true,"reasoning_effort":"high"}
       # Merged into the entrypoint's --speculative-config (method, drafter and
       # width stay SPEC_METHOD, DFLASH_MODEL and SPEC_TOKENS).
       - SPEC_EXTRA={"disable_eagle_block_drop":true,"attention_backend":"TRITON_ATTN","num_speculative_tokens_per_batch_size":[[1,1,7],[2,2,5],[3,3,4],[4,4,3],[5,5,2],[6,32,7]]}
