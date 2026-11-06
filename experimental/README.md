@@ -275,7 +275,7 @@ Other people's work in here:
 
 - arx and arxbig take the RDMA path MTU from the ports rather than assuming
   4096, from [Chuck](https://github.com/chuck-ads)'s
-  [#6](https://github.com/mmastrac/glm-5.3-flash-4x-gx10/pull/6).
+  [#6](https://github.com/kindlingai/glm-5.3-flash-gx10/pull/6).
 - `tilelang_kernels.py` carries vLLM's copy of SGLang's mHC kernel, and
   `causal_conv1d.py` vLLM's adaptation of Tri Dao's causal-conv1d, both
   credited in the file.
