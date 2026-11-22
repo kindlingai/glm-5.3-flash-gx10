@@ -1070,6 +1070,15 @@ echo "kv-cache-memory pinned to ${KV_CACHE_MEMORY} bytes ($(( KV_CACHE_MEMORY / 
 # profiled for KV and cost 38% of the cache: 810,576 tokens against 1,296,922.
 # With the KV pin above the pool is not profiled, and production runs eager.
 # Go back to lazy if the pin is ever dropped.
+#
+# usage.prompt_tokens_details is where the prefix cache surfaces: cached_tokens
+# on a hit, created_cache_tokens on a write. vLLM fills it only with
+# --enable-prompt-tokens-details, off by default and independent of prefix
+# caching; without it the field is null on every response, hit or miss, so a
+# client counting tokens bills a cached turn as a full prompt. Measured on
+# TP=2 (2026-11-22): the cache was already working (9,659-token prompt, 3.73 s
+# cold against 0.52 s warm) while the field stayed null, and the same calls
+# read 0 then 9,216 once the flag was on. It gates only the usage builder.
 exec vllm serve "$MODEL" \
   --served-model-name "$SERVED" \
   --tensor-parallel-size "$TP" \
@@ -1083,6 +1092,7 @@ exec vllm serve "$MODEL" \
   "${KV_ARGS[@]}" \
   --trust-remote-code \
   --enable-prefix-caching \
+  --enable-prompt-tokens-details \
   --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}" \
   --max-num-seqs "${MAX_NUM_SEQS}" \
   --long-prefill-token-threshold "${LONG_PREFILL_TOKEN_THRESHOLD}" \
