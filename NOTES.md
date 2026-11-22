@@ -4,6 +4,35 @@ The measurements and diagnosis behind the recipe in [README.md](README.md).
 Dates are when each was measured; image tags (v4, v6, sm90-v21) are the
 builds of this recipe at the time.
 
+## Prompt-cache hits in usage, 2026-11-22
+
+vLLM reports the prefix cache in `usage.prompt_tokens_details` only when
+served with `--enable-prompt-tokens-details`: `cached_tokens` on a hit,
+`created_cache_tokens` on a write. The flag is independent of
+`--enable-prefix-caching`, off by default, and was not in this recipe's
+serve line, so the field came back `null` on every response, hit or miss.
+The cache itself was fine. On a two-box TP=2 deployment (mentat 0.17.1,
+nightly ddd6fbca, MTP k=4, not the TP=4 gate hardware), the same
+9,659-token prompt at temperature 0 took 3.73 s cold and 0.52 s warm with
+`prompt_tokens_details: null` throughout, so a client counting tokens
+could not tell the two apart.
+
+With the flag on, the same calls reported:
+
+| request | `cached_tokens` | `created_cache_tokens` |
+|---|---|---|
+| cold | 0 | 9216 |
+| warm, same turn | 9216 | 0 |
+| warm, new final turn | 9216 | 0 |
+
+9,216 tokens is two 4,608-token blocks; the KDA page size makes the partial
+trailing block recompute. Nothing in the request path was rewriting the
+field: a router in front of vLLM (mentatd-serve) streams the response body
+through untouched, and `/v1/completions` showed the same `null` as
+`/v1/chat/completions`. In the serving code the flag gates only
+`_make_prompt_tokens_details`, the usage builder, so it cannot change
+scheduling or output; the entrypoint sets it unconditionally.
+
 ## Moving to a vLLM nightly, 2026-09-23
 
 Before the nightly, this ran a per-model base image with 16 vLLM source files
